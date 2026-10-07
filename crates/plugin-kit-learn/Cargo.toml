@@ -1,0 +1,19 @@
+[package]
+name = "plugin-kit-learn"
+description = "The plug-ins' MIDI Learn: a controller's absolute 7-bit control change on its channel assigned to a parameter, read by the audio thread from a table of atomics, saved with the host's project"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The kit's nih-plug, with its changes 10 and 11 (a parameter set from the audio thread, a
+# test context): the plug-ins take it from this repository at the same commit, so it is one
+# crate in their builds.
+nih_plug = { path = "../../third_party/nih-plug", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

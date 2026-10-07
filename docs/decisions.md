@@ -50,3 +50,14 @@ last, in a release of its own.
 **Evidence (the Mac, 2026-10-06):** rustc 1.97.1; `cargo fmt --all -- --check`, `cargo clippy
 --workspace --all-targets -- -D warnings` and `cargo test --workspace` pass (14 tests; the
 ngspice tests skip, ngspice not being installed there).
+
+**Evidence (GitHub CI, 2026-10-07 UTC, `dbd0545`):** fmt, clippy and the tests green on macOS 15,
+Windows 2025 and Ubuntu 22.04; on Linux with ngspice 47 built from its checked source and
+`REQUIRE_NGSPICE=1`, so the runner's tests ran rather than skipped.
+
+**Evidence (the plug-ins on `dbd0545`, 2026-10-06):** the CA-74 (its R11) and the MC-79 (its
+R14), switched on their `plugin-kit` branches, rendered every factory preset the same to the bit
+as their `main` (26 and 20 presets, `preset_render`), and passed fmt, clippy (with and without
+`--all-features`) and their tests on the Mac, on the Linux reference machine with
+`REQUIRE_NGSPICE=1`, and on Windows with MSVC, where each plug-in's DLL imports only the
+system's libraries (the C runtime linked in).

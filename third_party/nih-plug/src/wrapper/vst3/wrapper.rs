@@ -665,6 +665,11 @@ impl<P: Vst3Plugin> IEditController for Wrapper<P> {
     }
 
     unsafe fn get_param_normalized(&self, id: u32) -> f64 {
+        // The editor's edit not yet set is the controller's value (PATCHES.md, change 14)
+        if let Some(held) = self.inner.held_edit(id) {
+            return held as f64;
+        }
+
         match self.inner.param_by_hash.get(&id) {
             Some(param_ptr) => param_ptr.modulated_normalized_value() as f64,
             _ => 0.5,
@@ -909,6 +914,17 @@ impl<P: Vst3Plugin> IAudioProcessor for Wrapper<P> {
         self.inner.last_process_status.store(ProcessStatus::Normal);
         self.inner.is_processing.store(state, Ordering::SeqCst);
 
+        // Edits the editor made while processing, which no process call will now set
+        // (PATCHES.md, change 14)
+        if !state {
+            self.inner.set_held_edits(
+                self.inner
+                    .current_buffer_config
+                    .load()
+                    .map(|c| c.sample_rate),
+            );
+        }
+
         // This function is also used to reset buffers on the plugin, so we should do the same
         // thing. We don't call `reset()` in `setup_processing()` for that same reason.
         if state {
@@ -985,6 +1001,10 @@ impl<P: Vst3Plugin> IAudioProcessor for Wrapper<P> {
             // and now. We'll also need to store the note events in the same vector because MIDI CC
             // messages are sent through parameter changes. This vector gets sorted at the end so we
             // can treat it as a sort of queue.
+            // The editor's edits held since the last call come first, at the call's start, so that
+            // the host's own changes at its first sample follow them (PATCHES.md, change 14)
+            self.inner.set_held_edits(Some(sample_rate));
+
             let mut process_events = self.inner.process_events.borrow_mut();
             process_events.clear();
 

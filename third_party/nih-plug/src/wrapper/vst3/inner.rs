@@ -24,6 +24,10 @@ use crate::wrapper::state::{self, PluginState};
 use crate::wrapper::util::buffer_management::BufferManager;
 use crate::wrapper::util::{hash_param_id, process_wrapper, OwnParamChange, OWN_PARAM_CHANGES};
 
+/// A parameter with no edit held in [`WrapperInner::held_edits`]. The bits of a NaN, which no
+/// normalized value is.
+pub(crate) const NO_HELD_EDIT: u32 = u32::MAX;
+
 /// The actual wrapper bits. We need this as an `Arc<T>` so we can safely use our event loop API.
 /// Since we can't combine that with VST3's interior reference counting this just has to be moved to
 /// its own struct.
@@ -129,6 +133,13 @@ pub(crate) struct WrapperInner<P: Vst3Plugin> {
     /// parameters belonging to the plugin. These addresses will remain stable as long as the
     /// `params` object does not get deallocated.
     pub param_by_hash: HashMap<u32, ParamPtr>,
+    /// The editor's latest edit of each parameter, made while the host was processing audio and
+    /// not yet set, as the bits of its normalized value, or [`NO_HELD_EDIT`] (PATCHES.md, change
+    /// 14). It is set at the start of the next `process()` call, or as processing stops, and
+    /// until then it is the value `IEditController::getParamNormalized()` reports.
+    pub held_edits: HashMap<u32, AtomicU32>,
+    /// Whether any of [`held_edits`][Self::held_edits] may hold an edit.
+    pub any_held_edit: AtomicBool,
     /// Mappings from parameter hashes to string parameter IDs. Used for notifying the plugin's
     /// editor about parameter changes.
     pub param_id_by_hash: HashMap<u32, String>,
@@ -255,9 +266,13 @@ impl<P: Vst3Plugin> WrapperInner<P> {
             .iter()
             .map(|(_, hash, _, _)| *hash)
             .collect();
-        let param_by_hash = param_id_hashes_ptrs_groups
+        let param_by_hash: HashMap<u32, ParamPtr> = param_id_hashes_ptrs_groups
             .iter()
             .map(|(_, hash, ptr, _)| (*hash, *ptr))
+            .collect();
+        let held_edits = param_by_hash
+            .keys()
+            .map(|hash| (*hash, AtomicU32::new(NO_HELD_EDIT)))
             .collect();
         let param_id_by_hash = param_id_hashes_ptrs_groups
             .iter()
@@ -319,6 +334,8 @@ impl<P: Vst3Plugin> WrapperInner<P> {
 
             param_hashes,
             param_by_hash,
+            held_edits,
+            any_held_edit: AtomicBool::new(false),
             param_id_by_hash,
             param_units,
             param_id_to_hash,
@@ -441,6 +458,44 @@ impl<P: Vst3Plugin> WrapperInner<P> {
             .get(&param)
             .and_then(|hash| self.param_id_by_hash.get(hash))
             .map(|s| s.as_str())
+    }
+
+    /// Hold the editor's edit of a parameter, made while the host processes audio, until the next
+    /// process call sets it (PATCHES.md, change 14). A later edit of the same parameter replaces
+    /// it.
+    pub fn hold_edit(&self, hash: u32, normalized_value: f32) {
+        if let Some(held) = self.held_edits.get(&hash) {
+            held.store(normalized_value.to_bits(), Ordering::Release);
+            // After the value, so that the audio thread, seeing the flag, sees the value too
+            self.any_held_edit.store(true, Ordering::Release);
+        }
+    }
+
+    /// The editor's edit of a parameter held by [`hold_edit()`][Self::hold_edit()] and not yet
+    /// set, if there is one.
+    pub fn held_edit(&self, hash: u32) -> Option<f32> {
+        let bits = self.held_edits.get(&hash)?.load(Ordering::Acquire);
+        (bits != NO_HELD_EDIT).then(|| f32::from_bits(bits))
+    }
+
+    /// Set every held edit: at the start of a process call, before the host's parameter changes
+    /// (so that the host's changes in the same call, its automation or the edit sent back, come
+    /// after it), and as processing stops. An edit held while this runs is kept for the next call.
+    /// Nothing here allocates or waits.
+    pub fn set_held_edits(&self, sample_rate: Option<f32>) {
+        if !self.any_held_edit.swap(false, Ordering::AcqRel) {
+            return;
+        }
+
+        for (hash, held) in &self.held_edits {
+            let bits = held.load(Ordering::Acquire);
+            if bits != NO_HELD_EDIT {
+                self.set_normalized_value_by_hash(*hash, f32::from_bits(bits), sample_rate);
+                // A newer edit made since the load stays held, and has set the flag again
+                let _ =
+                    held.compare_exchange(bits, NO_HELD_EDIT, Ordering::AcqRel, Ordering::Relaxed);
+            }
+        }
     }
 
     /// Convenience function for setting a value for a parameter as triggered by a VST3 parameter

@@ -153,3 +153,18 @@ not yet committed there) is the spec, ported rather than redesigned.
 --workspace`: `plugin-kit-update` 11 passed (3 ignored, run by hand), `plugin-kit-learn` 15
 and its allocation test passed. The allocation test seen to fail (1,527 allocations) with a
 `Vec` made in `learned`.
+
+**Evidence (GitHub CI, 2026-10-07 UTC, `f217c14`):** fmt, clippy and the tests green on macOS 15,
+Windows 2025 and Ubuntu 22.04 (on Linux with ngspice 47 and `REQUIRE_NGSPICE=1`):
+`plugin-kit-learn`'s 15 tests and its allocation test, and `plugin-kit-update`'s 11, ran on each.
+
+**Evidence (the CA-74 on `f217c14`, its branch `learn-update`, 2026-10-06):** every kit crate at
+this commit, softbuffer through `[patch.crates-io]`, and the update check and MIDI Learn wired
+into its plug-in (its R-UPDATE, R-LEARN, R-SOFTBUFFER): every one of its 26 factory presets
+rendered the same to the bit as its `main` (`preset_render`); on the Linux reference machine,
+with `REQUIRE_NGSPICE=1`, fmt, clippy with and without `--all-features` and its tests (179
+passed, 0 failed) clean; its allocation test, through its own `process`, seen to fail with an
+allocation in its MIDI path and passing without. On the Mac (Apple silicon, macOS 27.0) its
+`softbuffer_copies` test passed with this softbuffer, which compiles this backend's change for
+the first time from the kit, and panicked with crates.io's 0.4.8 ("could not create new class
+"SoftbufferObserver", perhaps a class with that name already exists?").

@@ -85,3 +85,71 @@ runner in place of its copy, and that the other plug-ins gain them by moving to 
   test runs only on ngspice 47 (the TR-808's ran on any version).
 - **0.2.0:** a plug-in moving to it sees its lab's runs capped and lowered, and on Windows finds
   ngspice where the TR-808's package put it; nothing a run computes changes.
+
+## K3. The update check, MIDI Learn and softbuffer's fix, from the CA-72
+
+**The owner's plan, 2026-10-06** (K1): the update check and MIDI Learn's core come into the kit
+after the worker pool and the presets' library. The CA-74's release lead asked for these two
+first, with the CA-72's fix to softbuffer, so that the CA-74 reaches the CA-72's features before
+its release; the CA-72's code (its 0.1.3, `07a7dfb`, and its softbuffer fix, made on the Mac and
+not yet committed there) is the spec, ported rather than redesigned.
+
+**Agent decisions, 2026-10-06** (not separately approved):
+- **`plugin-kit-update`, the CA-72's `update.rs` (its R27) given the plug-in.** A plug-in names
+  itself with an `App`: its name as its release assets begin, its version, its repository. The
+  releases' page, the API's address for the latest release and curl's user agent
+  (`<NAME>/<version>`) come from it, as do the installers' names, the contract
+  `<NAME>-<version>-macOS.pkg`, `-Windows-setup.exe` and `-Linux-x86_64.tar.gz`. Everything
+  else is the CA-72's: the system's curl (`/usr/bin/curl` on macOS, `System32\curl.exe` on
+  Windows, the one on the path elsewhere), HTTPS only, redirects too, 20 s, 1 MB, nothing sent
+  but the request; curl writing a file made afresh that the editor polls each frame
+  (`Update::tick`), no thread waiting, past 30 s a failure, curl killed and the file removed
+  when the check is dropped; versions as three numbers; DOWNLOAD opening only addresses under
+  the repository's releases, in the browser, never running anything; the scenes' texts.
+- **What differs from the CA-72's file:** the drawer's scene is the kit's `Scene` and `Tone`,
+  which the plug-in draws (its panel is its own); `Update::every_scene` lists every scene, a
+  long version's among them, for a plug-in's test that each fits its drawer (the CA-72 tested
+  its own scenes against its panel); the stand-ins for curl and the browser (`fake`) are public,
+  for a plug-in's editor tests; Windows' shell is reached through `windows-sys`, which the kit
+  already takes, in place of `winapi` (the same `ShellExecuteW`); the answer's file is named
+  after the plug-in (`ca74-latest-release-…`).
+- **Its tests are the CA-72's**, on a plug-in of the tests' own (`KIT-TEST`), the versions
+  relative to `CARGO_PKG_VERSION` (the kit's), never written out; the three run by hand ask the
+  CA-72's public releases as if from a version 0.0.1.
+- **`plugin-kit-learn`, the CA-72's `learn.rs` (its R34) given the plug-in's list.** A
+  `MidiMap<N>` holds a plug-in's `N` learnable parameters (at most 255): the 16 × 128 table of
+  atomics the audio thread only loads, the arming taken with a compare-and-swap, every change
+  made off the audio thread under a lock it never takes; reserved controllers refused with the
+  reason; absolute 7-bit values on an exact channel; jump takeover; one controller a control and
+  one control a controller; the table as versioned JSON by stable parameter id, read leniently.
+  The plug-in lists its parameters (`knob`, `stepped`, `switch`) and says which parameter each
+  is (`LearnTargets`, in place of the CA-72's `target` and `knob_param` functions); `check`
+  holds the two together, as the CA-72's first test did.
+- **What every plug-in would otherwise repeat around nih-plug:** `control_change` is the
+  CA-72's `Ca72::midi` and `Ca72::learned` without the plug-in's own MIDI (a learnable
+  controller to the table, an assigned one setting its parameter through the host with
+  `ProcessContext::set_parameter_normalized`, the kit's nih-plug change 10, a knob gliding; a
+  reserved one left to the plug-in); `Dezip<N>` glides learned knobs over 10 ms, set every 32
+  samples; `filter_state` gives a state without a table an empty one.
+- **The table in the state:** nih-plug's persistent field holds a `Persisted`, written by the
+  instance with its keys in the CA-72's order (`version`, `assignments`; `param`, `channel`,
+  `cc`), read as any JSON and checked against the list as it loads. The CA-72's own type could
+  not serve: its JSON needs the plug-in's list, which serde cannot be given, and a
+  `serde_json::Value` would order its keys by whether a plug-in builds serde_json with
+  `preserve_order` (the CA-74 does).
+- **The kit's nih-plug as a path dependency** of `plugin-kit-learn`, its default features off:
+  a plug-in taking both from the kit at one commit has one nih-plug. So the kit's CI now builds
+  nih-plug's core.
+- **softbuffer 0.4.8, vendored and patched** (`third_party/softbuffer/PATCHES.md`), the copy
+  committed unchanged first and the change after it: each copy registers its observer class
+  under a name of its own at run time, so that a second plug-in's editor in one process (Bitwig
+  Studio on macOS) is not blank. A plug-in takes it through `[patch.crates-io]`, by git at the
+  kit's commit. The CA-72 found and made the fix; its test (`softbuffer_copies`, macOS only)
+  stays in the plug-ins, which build softbuffer with their features.
+- **0.3.0.** A plug-in that moves to it and takes none of the new crates sees nothing change.
+
+**Evidence (the Linux reference machine, 2026-10-06, rustc 1.97.1):** `cargo fmt --all --
+--check`; `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo test
+--workspace`: `plugin-kit-update` 11 passed (3 ignored, run by hand), `plugin-kit-learn` 15
+and its allocation test passed. The allocation test seen to fail (1,527 allocations) with a
+`Vec` made in `learned`.

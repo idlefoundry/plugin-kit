@@ -1,7 +1,8 @@
 # On macOS, Windows and Linux: formatting, clippy and the kit's tests, on Linux with ngspice 47
 # required (built from its source release, checked and cached), so that the ngspice runner's
 # tests run rather than skip. The vendored crates (third_party/) are built and tested by the
-# plug-ins that take them, not here (docs/decisions.md K1).
+# plug-ins that take them, not here (docs/decisions.md K1), but for nih-plug's core, which
+# plugin-kit-learn builds (K3).
 name: CI
 
 on:

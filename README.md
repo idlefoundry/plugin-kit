@@ -5,7 +5,7 @@ and the plug-ins that follow it. Each plug-in models its own instrument's circui
 have in common, from measuring a render to the patched plug-in framework, lives here once,
 so that a fix made for one reaches them all. GPL-3.0-or-later, as the plug-ins are.
 
-**Status:** 0.1.0, the first pieces (`docs/decisions.md` K1). The plug-ins move onto it one
+**Status:** 0.2.0: the first pieces (`docs/decisions.md` K1) and one ngspice runner for every lab (K2). The plug-ins move onto it one
 at a time; until one has, it keeps its own copies.
 
 ## What is here
@@ -13,7 +13,7 @@ at a time; until one has, it keeps its own copies.
 | Path | What |
 |---|---|
 | `crates/plugin-kit-analysis` | Measurements of rendered audio for the labs and the tests: loudness (ITU-R BS.1770-4), sample and true peak, a spectrum summary, onsets, a pitch track, A/B comparison of renders |
-| `crates/plugin-kit-spice` | ngspice 47 as the offline circuit reference: runs netlists in batch mode, reads their rawfiles, fails on anything ngspice reports as an error |
+| `crates/plugin-kit-spice` | ngspice 47 as the offline circuit reference: runs netlists in batch mode, reads their rawfiles, fails on anything ngspice reports as an error; on Linux, macOS and Windows; at most four runs on a machine at once, at the lowest priority |
 | `crates/plugin-kit-rt` | Real-time threads: promotion to the audio threads' scheduling (macOS time constraint, Linux `SCHED_FIFO`, Windows MMCSS), CPU pinning, a watchdog that demotes a starving thread, a backoff for waits |
 | `third_party/nih-plug` | The plug-in framework, at upstream's commit with thirteen changes (`PATCHES.md`) |
 | `third_party/baseview` | The editor's windows, with three changes for Windows hosts (`PATCHES.md`) |

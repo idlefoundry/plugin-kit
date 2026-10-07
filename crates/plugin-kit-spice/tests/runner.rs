@@ -1,6 +1,6 @@
 //! The runner against circuits with known answers, and its error catching.
 
-use plugin_kit_spice::{crossings, for_test};
+use plugin_kit_spice::{SLOTS, Slot, crossings, for_test};
 
 #[test]
 fn rc_step_matches_its_exponential() {
@@ -57,4 +57,20 @@ fn work_directories_with_spaces_work() {
         .run("divider\nv1 a 0 2\nr1 a b 1k\nr2 b 0 1k\n", &["op"], &work)
         .expect("runs");
     assert!((plots[0].scalar("b") - 1.0).abs() < 1e-9);
+}
+
+/// The slots cap the runs on a machine: [`SLOTS`] can be held at once in one directory, one
+/// more is refused while they are, and one is free again once any is let go.
+#[test]
+fn the_slots_cap_the_runs_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let held: Vec<Slot> = (0..SLOTS)
+        .map(|_| Slot::try_acquire_in(dir.path()).expect("a free slot"))
+        .collect();
+    assert!(
+        Slot::try_acquire_in(dir.path()).is_none(),
+        "a slot beyond the {SLOTS}"
+    );
+    drop(held);
+    assert!(Slot::try_acquire_in(dir.path()).is_some());
 }

@@ -2,17 +2,24 @@
 //!
 //! Each plug-in's voice is derived from transcribed netlists of its instrument's circuit (its
 //! `docs/circuit/`). ngspice solves those netlists at the circuit level; the real-time models
-//! are checked against its answers. ngspice is a tool here, never a
-//! dependency of the plug-in: nothing in it links or starts ngspice.
+//! are checked against its answers. ngspice is a tool here, never a dependency of the plug-in:
+//! nothing in it links or starts ngspice.
 //!
-//! - [`Ngspice::find`] looks for the binary: `NGSPICE` (it was `CA72_NGSPICE`,
-//!   `CA74_NGSPICE` and `MC79_NGSPICE` in each plug-in's own copy), then the newest
-//!   `~/.local/opt/ngspice-*/bin/ngspice`, then Homebrew's, then `PATH`.
+//! - [`Ngspice::find`] looks for the binary: `NGSPICE` (it was `CA72_NGSPICE`, `CA74_NGSPICE`,
+//!   `MC79_NGSPICE` and `TR808_NGSPICE` in each plug-in's own copy), then the newest
+//!   `~/.local/opt/ngspice-*/bin/ngspice`, then Homebrew's, then (on Windows) the official
+//!   package's console build `C:\Spice64\bin\ngspice_con.exe`, then `PATH`. Results differ in
+//!   their last bits between builds (Windows' from Linux's by about -88 dB): a reference is
+//!   regenerated bit for bit on the machine that made it.
 //! - [`Ngspice::run`] writes a netlist, appends a control block that runs the given
 //!   analyses and writes each one's vectors to a binary rawfile, runs ngspice in batch
 //!   mode and reads the rawfiles back ([`Plot`]).
 //! - Anything ngspice reports as an error (a singular matrix, a timestep too small, an
 //!   unknown model, a failed analysis) is an [`Error`], never a partial result.
+//! - The machines are shared (from the TR-808's runner, its decisions D3 and D32): every run
+//!   takes one of [`SLOTS`] slots machine-wide ([`Slot`]), holds the timing lock shared (so
+//!   a timing run that holds it exclusively keeps simulations from starting), and runs at the
+//!   lowest priority (nice 19; on Windows below normal, without a console window).
 //!
 //! Tests that need ngspice call [`for_test`]: without ngspice 47 ([`REFERENCE`]) it says
 //! so and the test returns early, unless `REQUIRE_NGSPICE` is set (the Linux
@@ -131,6 +138,14 @@ impl Ngspice {
         }
         candidates.push(PathBuf::from("/opt/homebrew/bin/ngspice"));
         candidates.push(PathBuf::from("/usr/local/bin/ngspice"));
+        // Windows: the official package's console build (`ngspice.exe` there opens a window).
+        if cfg!(windows) {
+            candidates.push(PathBuf::from(r"C:\Spice64\bin\ngspice_con.exe"));
+            candidates.push(PathBuf::from(
+                r"C:\Program Files\Spice64\bin\ngspice_con.exe",
+            ));
+            candidates.push(PathBuf::from("ngspice_con"));
+        }
         candidates.push(PathBuf::from("ngspice"));
         let mut tried = Vec::new();
         for c in candidates {
@@ -165,7 +180,14 @@ impl Ngspice {
         }
         text.push_str("quit\n.endc\n.end\n");
         std::fs::write(&cir, &text).map_err(|e| Error::Io(e.to_string()))?;
-        let out = Command::new(&self.path)
+        // The machine is shared (the crate's documentation): every run holds the timing lock
+        // shared,
+        // takes one of SLOTS slots, and runs at the lowest priority (nice 19; on Windows,
+        // below normal and without a console window).
+        let _timing = timing_lock();
+        let _slot = Slot::acquire();
+        let mut cmd = low_priority(&self.path);
+        let out = cmd
             .arg("-b")
             .arg("-o")
             .arg(&log)
@@ -204,6 +226,101 @@ impl Ngspice {
         }
         Ok(plots)
     }
+}
+
+/// `program` as a command at the lowest priority: `nice -n 19 program` on Unix.
+#[cfg(unix)]
+fn low_priority(program: &Path) -> Command {
+    let mut c = Command::new("nice");
+    c.arg("-n").arg("19").arg(program);
+    c
+}
+
+/// `program` as a command at the lowest priority: below normal and without a console window on
+/// Windows.
+#[cfg(windows)]
+fn low_priority(program: &Path) -> Command {
+    use std::os::windows::process::CommandExt;
+    const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut c = Command::new(program);
+    c.creation_flags(BELOW_NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW);
+    c
+}
+
+/// How many ngspice runs the plug-ins' labs let run at once on a machine (the owner's rule: at
+/// most four; other agents' runs share the machine).
+pub const SLOTS: usize = 4;
+
+/// One of the [`SLOTS`] run slots: an exclusive lock on one of
+/// `~/.cache/ngspice-slots/slot-N.lock` (or under `NGSPICE_SLOTS_DIR`; the TR-808's own copy
+/// used `~/.cache/808-ngspice-slots`), held until dropped, shared by every plug-in's lab on the
+/// machine. A process waits for a free slot. Without a home directory there is no limit.
+#[derive(Debug)]
+pub struct Slot {
+    _file: Option<std::fs::File>,
+}
+
+impl Slot {
+    /// A slot in the machine's slot directory, waiting for one to be free.
+    pub fn acquire() -> Slot {
+        let dir = std::env::var_os("NGSPICE_SLOTS_DIR")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache/ngspice-slots"))
+            });
+        match dir {
+            Some(dir) => Slot::acquire_in(&dir),
+            None => Slot { _file: None },
+        }
+    }
+
+    /// A slot in `dir`, waiting for one to be free; no limit if `dir` cannot be made.
+    pub fn acquire_in(dir: &Path) -> Slot {
+        if std::fs::create_dir_all(dir).is_err() {
+            return Slot { _file: None };
+        }
+        loop {
+            if let Some(slot) = Slot::try_acquire_in(dir) {
+                return slot;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+    }
+
+    /// A slot in `dir` if one is free now (`dir` must exist).
+    pub fn try_acquire_in(dir: &Path) -> Option<Slot> {
+        for i in 0..SLOTS {
+            let path = dir.join(format!("slot-{i}.lock"));
+            let Ok(f) = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&path)
+            else {
+                continue;
+            };
+            if f.try_lock().is_ok() {
+                return Some(Slot { _file: Some(f) });
+            }
+        }
+        None
+    }
+}
+
+/// `~/.cache/daw-timing.lock` held shared (as `flock -s` does): a timing-sensitive job holding
+/// it exclusively keeps simulations from starting. `None` when it cannot be opened.
+fn timing_lock() -> Option<std::fs::File> {
+    let home = std::env::var_os("HOME")?;
+    let path = PathBuf::from(home).join(".cache/daw-timing.lock");
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+        .ok()?;
+    f.lock_shared().ok()?;
+    Some(f)
 }
 
 /// The ngspice the reference measurements were made with: another version's answers may

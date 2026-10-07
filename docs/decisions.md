@@ -61,3 +61,27 @@ as their `main` (26 and 20 presets, `preset_render`), and passed fmt, clippy (wi
 `--all-features`) and their tests on the Mac, on the Linux reference machine with
 `REQUIRE_NGSPICE=1`, and on Windows with MSVC, where each plug-in's DLL imports only the
 system's libraries (the C runtime linked in).
+
+## K2. One ngspice runner for every lab, the TR-808's improvements in it
+
+**Owner decision, 2026-10-06.** Told that the TR-808's copy of the runner had become the best of
+the four (it runs ngspice on Windows and keeps the shared machine's rules in its own code), the
+owner agreed that its improvements come into the kit, that the TR-808 then takes the kit's
+runner in place of its copy, and that the other plug-ins gain them by moving to the new commit.
+
+**Agent decisions, 2026-10-06** (not separately approved):
+- **From the TR-808's runner** (its decisions D3 and D32), into `plugin-kit-spice`: on
+  Windows, the official package's console build (`C:\Spice64\bin\ngspice_con.exe`, which
+  opens no window); every run at the lowest priority (`nice -n 19`; on Windows below normal,
+  without a console window); every run holding `~/.cache/daw-timing.lock` shared, so that a
+  timing run holding it exclusively keeps simulations from starting; and every run taking one of
+  four slots, the owner's rule of at most four ngspice processes on a machine.
+- **One slot directory for every lab,** `~/.cache/ngspice-slots` (or `NGSPICE_SLOTS_DIR`), in
+  place of the TR-808's `~/.cache/808-ngspice-slots`, so the four are the machine's and not one
+  project's. `Slot::try_acquire_in` takes a slot without waiting, for the test that four can be
+  held and a fifth cannot.
+- **Kept from the kit:** the variables `NGSPICE` and `REQUIRE_NGSPICE` (the TR-808's were
+  `TR808_NGSPICE`, `TR808_REQUIRE_NGSPICE` and `TR808_SLOTS_DIR`), and `for_test`'s rule that a
+  test runs only on ngspice 47 (the TR-808's ran on any version).
+- **0.2.0:** a plug-in moving to it sees its lab's runs capped and lowered, and on Windows finds
+  ngspice where the TR-808's package put it; nothing a run computes changes.

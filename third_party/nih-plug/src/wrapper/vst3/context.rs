@@ -217,14 +217,17 @@ impl<P: Vst3Plugin> GuiContext for WrapperGuiContext<P> {
         match &*self.inner.component_handler.borrow() {
             Some(handler) => match self.inner.param_ptr_to_hash.get(&param) {
                 Some(hash) => {
-                    // Only update the parameters manually if the host is not processing audio. If
-                    // the plugin is currently processing audio, the host will pass this change back
-                    // to the plugin in the audio callback. This also prevents the values from
-                    // changing in the middle of the process callback, which would be unsound.
-                    // FIXME: So this doesn't work for REAPER, because they just silently stop
-                    //        processing audio when you bypass the plugin. Great. We can add a time
-                    //        based heuristic to work around this in the meantime.
-                    if !self.inner.is_processing.load(Ordering::SeqCst) {
+                    // While the host processes audio, the value is not changed here, so that it
+                    // never changes in the middle of a process call: the edit is held, and the
+                    // next process call sets it at its start (PATCHES.md, change 14). Until then
+                    // it is the value the controller reports, since a host may read it back as
+                    // the gesture ends and send that to the processor: Cubase 15 does, within
+                    // `endEdit()`, and the value from before the edit undid it. Upstream left the
+                    // value to the host's echo of the edit, which a host that stops processing
+                    // without saying so (REAPER, bypassing the plugin) never sends.
+                    if self.inner.is_processing.load(Ordering::SeqCst) {
+                        self.inner.hold_edit(*hash, normalized);
+                    } else {
                         self.inner.set_normalized_value_by_hash(
                             *hash,
                             normalized,

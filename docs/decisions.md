@@ -176,3 +176,35 @@ allocation in its MIDI path and passing without. On the Mac (Apple silicon, macO
 `softbuffer_copies` test passed with this softbuffer, which compiles this backend's change for
 the first time from the kit, and panicked with crates.io's 0.4.8 ("could not create new class
 "SoftbufferObserver", perhaps a class with that name already exists?").
+
+## K4. An edit in the editor survives a host that reads it back, as Cubase does
+
+**The owner's decision, 2026-10-07** (the CA-72's R36): users reported that the CA-72's buttons
+did nothing in Cubase 15 on Windows 11. The fault was in the VST3 wrapper of the nih-plug the
+plug-ins share; the owner had it fixed in the CA-72's own copy for its 0.1.4, and "the same
+change in `plugin-kit` for the CA-74 and the MC-79".
+
+**What was wrong**, as the CA-72's R36 has it: while the host processes audio, the wrapper did
+not set a value the editor changed, but left it for the host to send back to the processor at
+the next process call, and the controller reported the value from before the edit until then.
+Within `endEdit()`, Cubase 15 reads the controller's value and sends that to the processor,
+after the edit, so a click on a switch or a button set nothing, and a quick drag could end one
+move short. The CA-74's and the MC-79's switches and buttons would have done nothing in Cubase
+alike: their editors set parameters through the same wrapper.
+
+**Agent decisions, 2026-10-07** (not separately approved):
+- **The CA-72's change as it is**, its change 12, here change 14 (`PATCHES.md`): the edit is
+  held, the latest for each parameter; the controller reports it; the next process call sets it
+  at its start, before the host's own changes at its first sample; `setProcessing(false)` sets
+  it if no call will. The kit's `src/wrapper/vst3/inner.rs` and `context.rs` were the CA-72's to
+  the byte, and its `wrapper.rs` differs only by changes 12 and 13, which this does not touch.
+- **The test in `plugin-kit-learn`,** the kit's one crate on nih-plug:
+  `tests/vst3_host.rs`, the CA-72's, with nih-plug's VST3 wrapper switched on for the crate's
+  tests alone (a dev-dependency), which brings `vst3-sys` into the kit's `Cargo.lock`.
+- **0.3.1:** a fix. A plug-in takes it by moving its `rev` to this commit; until it does, its
+  VST3 has the fault. Moving the CA-74's and the MC-79's (their `plugin-kit` branches) is their
+  next step, with their factory presets checked bit-identical as before.
+
+**Evidence (the Windows machine, 2026-10-07):** see the CA-72's R36 for Cubase. Here, on this
+change: `cargo test -p plugin-kit-learn --test vst3_host`, 6 passed; with the wrapper restored,
+4 failed.

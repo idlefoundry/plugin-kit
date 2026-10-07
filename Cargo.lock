@@ -317,6 +317,7 @@ dependencies = [
  "raw-window-handle",
  "serde",
  "serde_json",
+ "vst3-sys",
  "widestring",
  "windows",
 ]
@@ -394,7 +395,7 @@ dependencies = [
 
 [[package]]
 name = "plugin-kit-analysis"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "libm",
  "serde",
@@ -402,7 +403,7 @@ dependencies = [
 
 [[package]]
 name = "plugin-kit-learn"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "nih_plug",
  "serde",
@@ -411,7 +412,7 @@ dependencies = [
 
 [[package]]
 name = "plugin-kit-rt"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "libc",
  "windows-sys",
@@ -419,14 +420,14 @@ dependencies = [
 
 [[package]]
 name = "plugin-kit-spice"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "tempfile",
 ]
 
 [[package]]
 name = "plugin-kit-update"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "serde_json",
  "windows-sys",
@@ -632,6 +633,43 @@ name = "unicode-ident"
 version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d245f478577f809a851594d02313b640fb437e0bb33866753cff937863096954"
+
+[[package]]
+name = "vst3-com"
+version = "0.1.0"
+source = "git+https://github.com/robbert-vdh/vst3-sys.git?branch=fix%2Fdrop-box-from-raw#b3ff4d775940f5b476b9d1cca02a90e07e1922a2"
+dependencies = [
+ "vst3-com-macros",
+]
+
+[[package]]
+name = "vst3-com-macros"
+version = "0.2.0"
+source = "git+https://github.com/robbert-vdh/vst3-sys.git?branch=fix%2Fdrop-box-from-raw#b3ff4d775940f5b476b9d1cca02a90e07e1922a2"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+ "vst3-com-macros-support",
+]
+
+[[package]]
+name = "vst3-com-macros-support"
+version = "0.2.0"
+source = "git+https://github.com/robbert-vdh/vst3-sys.git?branch=fix%2Fdrop-box-from-raw#b3ff4d775940f5b476b9d1cca02a90e07e1922a2"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "vst3-sys"
+version = "0.1.0"
+source = "git+https://github.com/robbert-vdh/vst3-sys.git?branch=fix%2Fdrop-box-from-raw#b3ff4d775940f5b476b9d1cca02a90e07e1922a2"
+dependencies = [
+ "vst3-com",
+]
 
 [[package]]
 name = "widestring"

@@ -15,5 +15,10 @@ nih_plug = { path = "../../third_party/nih-plug", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 
+[dev-dependencies]
+# The same nih-plug with its VST3 wrapper on, for `tests/vst3_host.rs` (K4) alone: the crate
+# itself does without it.
+nih_plug = { path = "../../third_party/nih-plug", features = ["vst3"] }
+
 [lints]
 workspace = true

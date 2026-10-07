@@ -3,8 +3,8 @@ use crate::backend_interface::*;
 use crate::error::InitError;
 use crate::{util, Rect, SoftBufferError};
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, Bool};
-use objc2::{define_class, msg_send, AllocAnyThread, DefinedClass, MainThreadMarker, Message};
+use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel};
+use objc2::{msg_send, sel, ClassType, MainThreadMarker};
 use objc2_core_foundation::{CFRetained, CGPoint};
 use objc2_core_graphics::{
     CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage, CGImageAlphaInfo,
@@ -18,48 +18,88 @@ use objc2_foundation::{
 use objc2_quartz_core::{kCAGravityTopLeft, CALayer, CATransaction};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawWindowHandle};
 
-use std::ffi::c_void;
+use std::ffi::{c_void, CString};
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::num::NonZeroU32;
 use std::ops::Deref;
 use std::ptr::{self, slice_from_raw_parts_mut, NonNull};
+use std::sync::OnceLock;
 
-define_class!(
-    #[unsafe(super(NSObject))]
-    #[name = "SoftbufferObserver"]
-    #[ivars = SendCALayer]
-    #[derive(Debug)]
-    struct Observer;
-
-    /// NSKeyValueObserving
-    impl Observer {
-        #[unsafe(method(observeValueForKeyPath:ofObject:change:context:))]
-        fn observe_value(
-            &self,
-            key_path: Option<&NSString>,
-            _object: Option<&AnyObject>,
-            change: Option<&NSDictionary<NSKeyValueChangeKey, AnyObject>>,
-            _context: *mut c_void,
-        ) {
-            self.update(key_path, change);
+/// The class of our observers, this copy of softbuffer's own.
+///
+/// Patched for the Idle Foundry plug-ins (`PATCHES.md`): upstream defines it with
+/// `define_class!` under a fixed name, `SoftbufferObserver`. The Objective-C runtime holds one
+/// class of a name per process, and a host that loads several plug-ins into one process may
+/// hold several copies of softbuffer, one in each plug-in's library: the second copy to make a
+/// surface could not define the class again, and panicked. This copy registers the class under
+/// the first name of `SoftbufferObserver1`, `SoftbufferObserver2`, ... that no other has taken
+/// (never upstream's, which an unpatched copy may still need), so each copy runs only its own
+/// code. The class has no state: an observation's context is the layer it updates.
+fn observer_class() -> &'static AnyClass {
+    static CLASS: OnceLock<&'static AnyClass> = OnceLock::new();
+    CLASS.get_or_init(|| {
+        let mut builder = (1u64..)
+            .find_map(|n| {
+                let name = CString::new(format!("SoftbufferObserver{n}")).unwrap();
+                ClassBuilder::new(&name, NSObject::class())
+            })
+            .expect("no free name for softbuffer's observer class");
+        // SAFETY: the signature is that of NSKeyValueObserving's
+        // `-observeValueForKeyPath:ofObject:change:context:`, which the method overrides.
+        unsafe {
+            builder.add_method(
+                sel!(observeValueForKeyPath:ofObject:change:context:),
+                observe_value as unsafe extern "C-unwind" fn(_, _, _, _, _, _),
+            );
         }
+        builder.register()
+    })
+}
+
+/// NSKeyValueObserving
+unsafe extern "C-unwind" fn observe_value(
+    _this: &NSObject,
+    _cmd: Sel,
+    key_path: Option<&NSString>,
+    _object: Option<&AnyObject>,
+    change: Option<&NSDictionary<NSKeyValueChangeKey, AnyObject>>,
+    context: *mut c_void,
+) {
+    // SAFETY: the context is our layer, which `CGImpl` keeps until its `Drop` has removed the
+    // observations (`CGImpl::new`).
+    let layer = unsafe { &*context.cast::<CALayer>() };
+    Observer::update(layer, key_path, change);
+}
+
+/// An observer: an instance of `observer_class()`.
+#[derive(Debug)]
+struct Observer(Retained<NSObject>);
+
+// SAFETY: The class has no state of its own (upstream's observer was `Send` and `Sync` through
+// its ivars, `SendCALayer`), and `NSObject` may be retained and released on any thread.
+unsafe impl Send for Observer {}
+// SAFETY: Same as above.
+unsafe impl Sync for Observer {}
+
+impl Deref for Observer {
+    type Target = NSObject;
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
-);
+}
 
 impl Observer {
-    fn new(layer: &CALayer) -> Retained<Self> {
-        let this = Self::alloc().set_ivars(SendCALayer(layer.retain()));
-        unsafe { msg_send![super(this), init] }
+    fn new() -> Self {
+        // SAFETY: `+new` of a subclass of `NSObject` gives a new, initialized instance.
+        Self(unsafe { msg_send![observer_class(), new] })
     }
 
     fn update(
-        &self,
+        layer: &CALayer,
         key_path: Option<&NSString>,
         change: Option<&NSDictionary<NSKeyValueChangeKey, AnyObject>>,
     ) {
-        let layer = self.ivars();
-
         let change =
             change.expect("requested a change dictionary in `addObserver`, but none was provided");
         let new = change
@@ -102,7 +142,7 @@ pub struct CGImpl<D, W> {
     ///
     /// Can also be retrieved from `layer.superlayer()`.
     root_layer: SendCALayer,
-    observer: Retained<Observer>,
+    observer: Observer,
     color_space: CFRetained<CGColorSpace>,
     /// The width of the underlying buffer.
     width: usize,
@@ -191,7 +231,7 @@ impl<D: HasDisplayHandle, W: HasWindowHandle> SurfaceInterface<D, W> for CGImpl<
         //
         // layer.setAutoresizingMask(kCALayerHeightSizable | kCALayerWidthSizable);
 
-        let observer = Observer::new(&layer);
+        let observer = Observer::new();
         // Observe changes to the root layer's bounds and scale factor, and apply them to our layer.
         //
         // The previous implementation updated the scale factor inside `resize`, but this works
@@ -202,19 +242,23 @@ impl<D: HasDisplayHandle, W: HasWindowHandle> SurfaceInterface<D, W> for CGImpl<
         // `contentsScale` of the layer directly, and instead let the `resize` call that the user
         // controls only be the size of the underlying buffer.
         //
-        // SAFETY: Observer deregistered in `Drop` before the observer object is deallocated.
+        // The observations' context is our layer, which the observer updates (patched,
+        // `PATCHES.md`).
+        let context: *mut c_void = Retained::as_ptr(&layer).cast_mut().cast();
+        // SAFETY: Observer deregistered in `Drop` before the observer object is deallocated, and
+        // before our layer is released.
         unsafe {
             root_layer.addObserver_forKeyPath_options_context(
                 &observer,
                 ns_string!("contentsScale"),
                 NSKeyValueObservingOptions::New | NSKeyValueObservingOptions::Initial,
-                ptr::null_mut(),
+                context,
             );
             root_layer.addObserver_forKeyPath_options_context(
                 &observer,
                 ns_string!("bounds"),
                 NSKeyValueObservingOptions::New | NSKeyValueObservingOptions::Initial,
-                ptr::null_mut(),
+                context,
             );
         }
 

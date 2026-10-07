@@ -72,5 +72,32 @@ fn the_slots_cap_the_runs_at_once() {
         "a slot beyond the {SLOTS}"
     );
     drop(held);
-    assert!(Slot::try_acquire_in(dir.path()).is_some());
+    // Free again once let go: at once on Linux, Windows and macOS 27; the check allows a
+    // moment, and says why if a slot stays taken (each slot file's own lock error).
+    let free = (0..40).any(|_| {
+        let got = Slot::try_acquire_in(dir.path()).is_some();
+        if !got {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        got
+    });
+    assert!(
+        free,
+        "no slot free once all were let go: {}",
+        why(dir.path())
+    );
+}
+
+/// Each slot file's answer to a lock, for a failure's message.
+fn why(dir: &std::path::Path) -> String {
+    (0..SLOTS)
+        .map(|i| {
+            let path = dir.join(format!("slot-{i}.lock"));
+            match std::fs::OpenOptions::new().write(true).open(&path) {
+                Ok(f) => format!("slot-{i}: {:?}", f.try_lock()),
+                Err(e) => format!("slot-{i}: open: {e}"),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }

@@ -85,3 +85,11 @@ runner in place of its copy, and that the other plug-ins gain them by moving to 
   test runs only on ngspice 47 (the TR-808's ran on any version).
 - **0.2.0:** a plug-in moving to it sees its lab's runs capped and lowered, and on Windows finds
   ngspice where the TR-808's package put it; nothing a run computes changes.
+
+**Evidence (2026-10-06):** CI at `15e79be` green on macOS 15, Windows 2025 and Ubuntu 22.04 (the
+slots' test allows a moment: macOS 15 frees a slot let go a little later than the others). The
+CA-74 and the MC-79 on it: clippy clean and their tests green on the Mac, on the Linux reference
+machine with `REQUIRE_NGSPICE=1`, and on the Windows machine, where the runner now finds
+`C:\Spice64\bin\ngspice_con.exe` and their ngspice tests ran for the first time (139 and 194
+passed, none skipped). The TR-808 on it: 14 tests green, and five hits made again with the kit's
+runner the same to the bit as its reference (its D36).

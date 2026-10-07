@@ -1,0 +1,39 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+# The vendored crates are taken by the plug-ins from this repository by name (a git
+# dependency at a commit), not built as members here.
+exclude = ["third_party"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "GPL-3.0-or-later"
+publish = false
+repository = "https://github.com/idlefoundry/plugin-kit"
+
+[workspace.dependencies]
+libc = "0.2"
+libm = "0.2"
+serde = { version = "1", features = ["derive"] }
+tempfile = "3.27"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+undocumented_unsafe_blocks = "warn"
+unwrap_used = "warn"
+
+# The analysis runs seconds of audio in its tests: unoptimised, they crawl. (A plug-in that
+# takes these crates sets the same in its own workspace: a dependency's profiles are ignored.)
+[profile.dev.package.plugin-kit-analysis]
+opt-level = 3
+
+[profile.dev.package.libm]
+opt-level = 3

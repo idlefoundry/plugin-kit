@@ -1,0 +1,82 @@
+# On macOS, Windows and Linux: formatting, clippy and the kit's tests, on Linux with ngspice 47
+# required (built from its source release, checked and cached), so that the ngspice runner's
+# tests run rather than skip. The vendored crates (third_party/) are built and tested by the
+# plug-ins that take them, not here (docs/decisions.md K1).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macOS, os: macos-15 }
+          - { name: Windows, os: windows-2025 }
+          - { name: Linux, os: ubuntu-22.04 }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Rust (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        if: runner.os == 'Linux'
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: ngspice's libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libreadline-dev bison flex
+
+      - name: ngspice 47, cached
+        if: runner.os == 'Linux'
+        id: ngspice
+        uses: actions/cache@v5
+        with:
+          path: ~/.local/opt/ngspice-47
+          key: ngspice-47-${{ matrix.os }}
+
+      - name: ngspice 47, built
+        if: runner.os == 'Linux' && steps.ngspice.outputs.cache-hit != 'true'
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o ngspice-47.tar.gz https://downloads.sourceforge.net/project/ngspice/ng-spice-rework/47/ngspice-47.tar.gz
+          echo "894e649651f1838a14095e5a5439e7d3aa63e87ede14d283173fda4fcdef675f  ngspice-47.tar.gz" | sha256sum -c -
+          tar xzf ngspice-47.tar.gz
+          cd ngspice-47 && mkdir release && cd release
+          ../configure --prefix="$HOME/.local/opt/ngspice-47" --with-readline=yes --enable-openmp --without-x --disable-debug
+          make -j"$(nproc)"
+          make install
+
+      - name: Tests
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then export REQUIRE_NGSPICE=1; fi
+          cargo test --workspace --no-fail-fast

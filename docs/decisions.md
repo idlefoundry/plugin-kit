@@ -208,3 +208,64 @@ alike: their editors set parameters through the same wrapper.
 **Evidence (the Windows machine, 2026-10-07):** see the CA-72's R36 for Cubase. Here, on this
 change: `cargo test -p plugin-kit-learn --test vst3_host`, 6 passed; with the wrapper restored,
 4 failed.
+
+## K5. The worn skins' materials, from the CA-74
+
+**The owner, 2026-10-09:** asked, for the CA-72's realistic look, whether the CA-74's materials
+code (its glow, glowing caps and dot lettering) should move into plugin-kit rather than be
+copied: "plugin-kit".
+
+**Agent decisions, 2026-10-09** (not separately approved):
+- **`plugin-kit-materials`**, from the CA-74's `materials.rs` (its R36 to R38, R40): pictures
+  placed and resampled at a scale (`place`, `sprite`, `resample`, `widened`), a display's glass
+  (`glass`), a lit button's light on the surface round it (`Glow`), the translucent cap lit
+  from inside made from an opaque cap's picture (`lighting`), its sheen as SVG (`lit_caps`),
+  dots filled as one shape (`discs`, `fill`), a star's path, a rounded rectangle's path, and a
+  dot-matrix display's lettering, five dots by seven with descenders (`font`). It depends only on
+  resvg (0.45, the plug-ins'), for its tiny-skia.
+- **The plug-in's own stays with it:** its pictures (the opaque cap, the glass), its colours
+  and its SVG documents (`svg_over` in the CA-74). The colours a material takes are arguments:
+  a lit button's light (`Underlight`; the CA-74's red, `RED_LIGHT`) and a translucent cap's
+  (`Tint`, its lit and unlit colour of its glow and shade; the CA-74's red, `RED`, the same
+  arithmetic as before).
+
+**Evidence (the Linux reference machine, 2026-10-09):** the CA-74 on it (its branch
+`kit-materials` from `release-0.1`, the crate by path while this is on its branch): its strip
+(SCATTER and DOUBLE in use), its drop-down (twice) and its whole window with and without it
+drawn the same to the bit as before; its panel's and plug-in's tests (213) pass; rustfmt;
+clippy with `-D warnings`. This crate: rustfmt, clippy, its tests.
+
+## K6. The stereo and AUTO GAIN, from the CA-74
+
+**The owner, 2026-10-09**, of the CA-74's stereo copied into the CA-72: "are we going to move
+the stereo effects to the plugin kit as well? seems like a common thing we would use"; told
+the general parts would move, after the materials (K5), and on 2026-10-10: "Do 1 & 2" (K5
+published, and this).
+
+**Agent decisions, 2026-10-10** (not separately approved):
+- **`plugin-kit-stereo`**, from the CA-74's stereo (its R25, R27 to R30, R41) as the CA-72 took
+  it (its R-STEREO), moved without a change to its arithmetic:
+  - `place`: the pan law (`pan_gains`, constant power, both sides whole at the centre),
+    SCATTER's placement of a voice among VOICES at full SPREAD (`Placement`: EVEN, EDGES,
+    CENTER) and DOUBLE's pair (`Placement::pair`, `pair_gains`), a voice's gains by SPREAD
+    (`voice_gains`), the glide a voice's place follows its controls with (`GLIDE`,
+    `glide_share`), DOUBLE's detune and trim, UNISON's trim.
+  - `auto_gain`: DRIVE's correction at its steps (`Curve`, drawn straight between them), as a
+    session saves it (`Saved`, `{"sound": .., "db": [..]}`), shared by the editor, the helper
+    thread, the audio thread (read without a lock) and the host (`Calibration`), measured a
+    render at a time (`Job`), K-weighted (`KWeighted`).
+- **The instrument's own stays with it:** its voices, which measure a sound (the `Measure`
+  trait: made for a sound at a rate, a sound's K-weighted energy at a DRIVE), what makes a
+  sound and its key (passed to `Calibration::ask`), the number of steps (`N`), DRIVE's top and
+  the average curve of its presets, and the session's field (nih-plug's `PersistentField`, on
+  the plug-in's own wrapper: this crate takes no nih-plug, so a plug-in with its own, as the
+  CA-72 has, can take it).
+
+**Evidence (the Linux reference machine, 2026-10-10):** the CA-72 on it (its branch
+`realistic-look`): every factory preset rendered with POLY's ten voices (`preset_render`) and
+every factory preset's AUTO GAIN curve, measured at 48 kHz, the same to the bit as before;
+three presets each with DOUBLE, UNISON and each placement forced on (eighteen renders) the same
+to the bit as at the commit before; the session's field saved as the same text; its tests pass
+(the placement's and the curve's moved here). This crate: its tests (14), rustfmt, clippy with
+`-D warnings`. Not yet: the CA-74 on it.
+

@@ -269,3 +269,79 @@ to the bit as at the commit before; the session's field saved as the same text; 
 (the placement's and the curve's moved here). This crate: its tests (14), rustfmt, clippy with
 `-D warnings`. Not yet: the CA-74 on it.
 
+
+## K7. INNER: the inner edge of each side's band
+
+**The owner, 2026-10-10:** "right now, we have a way to control the outer edges, which is
+width ... Imagine we're just dealing with the left-hand side of the stereo spectrum. You have
+your far left-hand edge ... and then you have your right-hand edge, which is currently our
+center. Width would bring things in from the left-hand edge, but we would have no control to
+bring things in from the right-hand edge, from the center." Asked two questions, with a
+recommendation for each, the owner chose the name: "Go with 'inner' and yes, this should affect
+the CA-74 as well", taking the recommendations for the rest (below).
+
+**Agent decisions, 2026-10-10**, as recommended to the owner:
+- **INNER is a share of SPREAD (WIDTH), 0 to 100 %, not a place of its own.** Each side's voices
+  sit in a band from INNER's share of SPREAD's way out to SPREAD's edge, each as far across it
+  as its placement puts it at full SPREAD (`band`: `inner + (1 - inner) * out`). So both
+  controls always do something, they never cross, and SPREAD still scales the whole picture
+  as it did; at INNER 100 % every voice sits at SPREAD's edge, and at SPREAD 0 both sides are
+  whole, whatever INNER.
+- **A voice placed in the centre takes the side its turn falls on** (`Placement::side`), as
+  EVEN takes them, the left first: EVEN's last voice of an odd number and CENTER's first. So
+  INNER clears the centre of every voice; the voice moves only as far as INNER takes it, so
+  there is no jump as INNER leaves 0.
+- **DOUBLE's pairs keep to the band too** (`pair_gains`), still mirrored about the centre: a
+  pair placed in the centre opens to INNER's share either side.
+- **`voice_gains` and `pair_gains` take `inner` after `spread`.** INNER at 0 gives every voice
+  and every pair the gains it got before, to the bit (`band(0, out)` is `out`), so a plug-in
+  with INNER at 0 renders as before. **`voice_at` and `pair_at`** give where those gains put a
+  voice or a pair, -1 to 1, so a plug-in's display of the field draws its voices where they are
+  heard (the CA-74's and the CA-72's strips placed them by `place` times SPREAD themselves).
+
+**Evidence (the Linux reference machine, 2026-10-10):** this crate's tests (19: INNER at 0 to
+the bit for every placement, VOICES 1 to 12 and SPREAD 0 to 1; every voice within its side's
+band and in its order; the centre's voice to its turn's side; the pairs; a display's places
+where the gains put them), rustfmt, clippy with
+`-D warnings`.
+
+### EDGES dropped (2026-10-10)
+
+**The owner, 2026-10-10**, in order: "I don't really see any difference between edge and even,
+because edge is now just even with the inner controls on maximum, is it not?"; told it is close
+but not identical at 8 to 10 voices: "if there is cases where it yields different behavior,
+then maybe we can just leave it. Just make sure that that's true"; then "Do you think those
+differences will be practically audible? I'm changing my mind again…"; "Drop it."; asked for
+the renders first ("Actually render first"), listened, then: "k, I think we should remove
+edges".
+
+**Agent decisions, 2026-10-10:**
+- **EDGES removed, because INNER covers it.** With VOICES 2 to 7, EVEN with the right INNER puts
+  every voice where EDGES did (INNER 90 % at 3 voices down to 70 % at 7). With DOUBLE, EDGES
+  (every pair at the edge) is any placement at INNER 100 %, to the bit (`band(1, out)` is 1).
+  With VOICES 8 to 10 and no DOUBLE, EDGES filled strictly outside-in while EVEN puts its second
+  pair halfway in, so no setting matches exactly; the closest EVEN is off by at most about 8 %
+  of the way out (WIDTH 95 %, INNER 68 % at 10 voices), which the A/B renders showed is not
+  heard in playing. CENTER never matched (its second voice goes left). The table's length,
+  which was also the most voices placed apart, is now `MOST` (10).
+- **`ALONE` (1) for a lone voice's pair** (POLY and UNISON off): all the way out at full SPREAD,
+  whatever the placement and whatever INNER (`band(inner, 1)` is 1), since it has no place among
+  others (the CA-74's R41). The plug-ins got that by passing EDGES for a lone voice; they pass
+  `ALONE` to `pair_at` and `pair_gains` instead.
+- **Two placements, EVEN (index 0) and CENTER (1)**; any other index is EVEN. The index is only
+  how a voices' mix carries the placement to the worker threads; each plug-in maps its own
+  parameter's index. `Placement::pair` is the voice's own place, as far out, for both.
+- **The CA-74's more thorough pairs test moved here**
+  (`double_pairs_are_as_far_out_as_their_voices_places`, without its EDGES loop), as its agent
+  asked "next time the kit is open". Nothing in EVEN's or CENTER's places, `side`, `band`,
+  `voice_at`, `pair_at`, `voice_gains`, `pair_gains` or `pan_gains` changed its arithmetic.
+
+**Evidence (the Linux reference machine, 2026-10-10):** this crate's tests (20: every pair at
+the edge is INNER at 100 % to the bit, for both placements, VOICES 2 to 10, every voice and
+four SPREADs; a lone voice's pair at SPREAD's edge whatever INNER; each pair as far out as its
+voice's place; the rest as before), rustfmt, clippy with `-D warnings`, and the workspace
+checks without `Edges`. The A/B renders from the CA-72 (`ca72-edges-ab`): POLY and UNISON with
+EDGES against EVEN with INNER 55 % measured the same stereo width (side over mid within
+0.05 dB, the left-right correlation within 0.006); a single note, the worst case, differed by
+about 2 dB of left-right balance on notes already 12 to 17 dB to one side, where plain EVEN,
+the reference, differed by 6 to 8 dB.

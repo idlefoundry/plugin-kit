@@ -269,3 +269,38 @@ to the bit as at the commit before; the session's field saved as the same text; 
 (the placement's and the curve's moved here). This crate: its tests (14), rustfmt, clippy with
 `-D warnings`. Not yet: the CA-74 on it.
 
+
+## K7. INNER: the inner edge of each side's band
+
+**The owner, 2026-10-10:** "right now, we have a way to control the outer edges, which is
+width ... Imagine we're just dealing with the left-hand side of the stereo spectrum. You have
+your far left-hand edge ... and then you have your right-hand edge, which is currently our
+center. Width would bring things in from the left-hand edge, but we would have no control to
+bring things in from the right-hand edge, from the center." Asked two questions, with a
+recommendation for each, the owner chose the name: "Go with 'inner' and yes, this should affect
+the CA-74 as well", taking the recommendations for the rest (below).
+
+**Agent decisions, 2026-10-10**, as recommended to the owner:
+- **INNER is a share of SPREAD (WIDTH), 0 to 100 %, not a place of its own.** Each side's voices
+  sit in a band from INNER's share of SPREAD's way out to SPREAD's edge, each as far across it
+  as its placement puts it at full SPREAD (`band`: `inner + (1 - inner) * out`). So both
+  controls always do something, they never cross, and SPREAD still scales the whole picture
+  as it did; at INNER 100 % every voice sits at SPREAD's edge, and at SPREAD 0 both sides are
+  whole, whatever INNER.
+- **A voice placed in the centre takes the side its turn falls on** (`Placement::side`), as
+  EVEN takes them, the left first: EVEN's last voice of an odd number and CENTER's first. So
+  INNER clears the centre of every voice; the voice moves only as far as INNER takes it, so
+  there is no jump as INNER leaves 0.
+- **DOUBLE's pairs keep to the band too** (`pair_gains`), still mirrored about the centre: a
+  pair placed in the centre opens to INNER's share either side.
+- **`voice_gains` and `pair_gains` take `inner` after `spread`.** INNER at 0 gives every voice
+  and every pair the gains it got before, to the bit (`band(0, out)` is `out`), so a plug-in
+  with INNER at 0 renders as before. **`voice_at` and `pair_at`** give where those gains put a
+  voice or a pair, -1 to 1, so a plug-in's display of the field draws its voices where they are
+  heard (the CA-74's and the CA-72's strips placed them by `place` times SPREAD themselves).
+
+**Evidence (the Linux reference machine, 2026-10-10):** this crate's tests (19: INNER at 0 to
+the bit for every placement, VOICES 1 to 12 and SPREAD 0 to 1; every voice within its side's
+band and in its order; the centre's voice to its turn's side; the pairs; a display's places
+where the gains put them), rustfmt, clippy with
+`-D warnings`.

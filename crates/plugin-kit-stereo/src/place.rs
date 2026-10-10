@@ -1,6 +1,7 @@
 //! Where the voices sit in the stereo field and how loud: the pan law, SCATTER's placement of
-//! POLY's voices at full SPREAD and DOUBLE's pairs (the CA-74's R27, R28, R30 and R41), the
-//! glide a voice's place follows its controls with, and the trims of voices summed (R25, R28).
+//! POLY's voices at full SPREAD and DOUBLE's pairs (the CA-74's R27, R28, R30 and R41), INNER's
+//! band on either side (K7), the glide a voice's place follows its controls with, and the trims
+//! of voices summed (R25, R28).
 
 /// The pan law: at `pan` (0 left, 0.5 centre, 1 right) each side's gain, of constant power
 /// (a voice as loud wherever it sits, so the centre does not outweigh the sides), both
@@ -75,6 +76,20 @@ impl Placement {
         }
     }
 
+    /// The side voice `k` of `n` sits on, -1 (left) or 1 (right): its place's; a voice placed
+    /// in the centre (EVEN's last of an odd number, CENTER's first), the side its turn falls on,
+    /// as EVEN takes them, the left first, so that INNER clears the centre of every voice (K7).
+    pub fn side(self, k: usize, n: usize) -> f64 {
+        let place = self.place(k, n);
+        if place != 0.0 {
+            place.signum()
+        } else if (k % n.clamp(2, EDGES.len())).is_multiple_of(2) {
+            -1.0
+        } else {
+            1.0
+        }
+    }
+
     /// Its index (0..3), as a voices' mix carries it and a preset saves it, and back.
     pub fn index(self) -> usize {
         match self {
@@ -93,24 +108,52 @@ impl Placement {
     }
 }
 
+/// How far out on its side a voice sits by `inner` (0..1) of INNER, a share of SPREAD's way out,
+/// for `out` (0 centre to 1 edge) where its placement puts it: the side's band from INNER's
+/// share of the way out to SPREAD's edge, the voice as far across it as `out` (K7). At INNER 0
+/// the band reaches the centre, `out` itself, to the bit, as before INNER; at 1 every voice at
+/// the edge.
+pub fn band(inner: f64, out: f64) -> f64 {
+    inner + (1.0 - inner) * out
+}
+
+/// Where voice `k` of `n` sits, -1 (left) to 1 (right), as `placement` has it, by `spread`
+/// (0..1) of SPREAD, in its side's band by `inner` (0..1) of INNER ([`band`],
+/// [`Placement::side`]): where [`voice_gains`] puts it, for a display to draw it there.
+pub fn voice_at(spread: f64, inner: f64, placement: Placement, k: usize, n: usize) -> f64 {
+    spread * placement.side(k, n) * band(inner, placement.place(k, n).abs())
+}
+
+/// How far out to either side DOUBLE's pair `out` (0 to 1, [`Placement::pair`]) sits by `spread`
+/// and `inner` (0..1): where [`pair_gains`] puts it, for a display to draw it there.
+pub fn pair_at(spread: f64, inner: f64, out: f64) -> f64 {
+    spread * band(inner, out)
+}
+
 /// The gains (left, right) that put voice `k` of `n` in its place, as `placement` has it, by
-/// `spread` (0..1) of SPREAD ([`pan_gains`]; both whole at 0).
-pub fn voice_gains(spread: f64, placement: Placement, k: usize, n: usize) -> (f32, f32) {
+/// `spread` (0..1) of SPREAD, in its side's band by `inner` (0..1) of INNER ([`voice_at`],
+/// [`pan_gains`]; both whole at SPREAD 0, whatever INNER).
+pub fn voice_gains(
+    spread: f64,
+    inner: f64,
+    placement: Placement,
+    k: usize,
+    n: usize,
+) -> (f32, f32) {
     if spread > 0.0 {
-        pan_gains(0.5 + 0.5 * spread * placement.place(k, n))
+        pan_gains(0.5 + 0.5 * voice_at(spread, inner, placement, k, n))
     } else {
         (1.0, 1.0)
     }
 }
 
-/// DOUBLE's pair `out` (0 to 1, [`Placement::pair`]) by `spread` (0..1): the gains (left, right)
-/// of the voice, half the detune flat, that far to the right, and of its twin, half sharp, as
-/// far to the left (the CA-74's R28 and R41).
-pub fn pair_gains(spread: f64, out: f64) -> [(f32, f32); 2] {
-    [
-        pan_gains(0.5 + 0.5 * spread * out),
-        pan_gains(0.5 - 0.5 * spread * out),
-    ]
+/// DOUBLE's pair `out` (0 to 1, [`Placement::pair`]) by `spread` (0..1), in each side's band by
+/// `inner` (0..1, [`pair_at`]): the gains (left, right) of the voice, half the detune flat, that
+/// far to the right, and of its twin, half sharp, as far to the left (the CA-74's R28 and R41;
+/// K7).
+pub fn pair_gains(spread: f64, inner: f64, out: f64) -> [(f32, f32); 2] {
+    let at = pair_at(spread, inner, out);
+    [pan_gains(0.5 + 0.5 * at), pan_gains(0.5 - 0.5 * at)]
 }
 
 /// The detune between DOUBLE's two voices of a note at its full amount, cents (the CA-74's R28).
@@ -235,18 +278,150 @@ mod tests {
     #[test]
     fn a_pair_mirrors_about_the_centre() {
         for out in [0.0, 0.3, 1.0] {
-            let [voice, twin] = pair_gains(0.8, out);
+            let [voice, twin] = pair_gains(0.8, 0.0, out);
             assert_eq!((voice.0, voice.1), (twin.1, twin.0), "out {out}");
         }
-        assert_eq!(pair_gains(0.0, 1.0), [pan_gains(0.5); 2]);
+        assert_eq!(pair_gains(0.0, 0.0, 1.0), [pan_gains(0.5); 2]);
         assert_eq!(Placement::Edges.pair(3, 8), 1.0);
         assert_eq!(Placement::Centre.pair(0, 8), 0.0);
         assert_eq!(
             Placement::Even.pair(2, 8),
             Placement::Even.place(2, 8).abs()
         );
-        assert_eq!(voice_gains(0.0, Placement::Edges, 0, 4), (1.0, 1.0));
-        assert_eq!(voice_gains(1.0, Placement::Edges, 0, 4), pan_gains(0.0));
+        assert_eq!(voice_gains(0.0, 0.0, Placement::Edges, 0, 4), (1.0, 1.0));
+        assert_eq!(
+            voice_gains(1.0, 0.0, Placement::Edges, 0, 4),
+            pan_gains(0.0)
+        );
+    }
+
+    /// Where a voice's gains put it, -1 (left) to 1 (right), back from the pan law.
+    fn heard(g: (f32, f32)) -> f64 {
+        4.0 * f64::from(g.1).atan2(f64::from(g.0)) / std::f64::consts::PI - 1.0
+    }
+
+    const PLACEMENTS: [Placement; 3] = [Placement::Even, Placement::Edges, Placement::Centre];
+
+    /// INNER at 0 changes nothing: every voice and every pair, at every SPREAD, gets the gains it
+    /// got before INNER, to the bit.
+    #[test]
+    fn inner_at_0_is_as_before_to_the_bit() {
+        for placement in PLACEMENTS {
+            for n in 1..=12 {
+                for k in 0..24 {
+                    for s in 0..=10 {
+                        let spread = f64::from(s) / 10.0;
+                        let before = if spread > 0.0 {
+                            pan_gains(0.5 + 0.5 * spread * placement.place(k, n))
+                        } else {
+                            (1.0, 1.0)
+                        };
+                        assert_eq!(voice_gains(spread, 0.0, placement, k, n), before);
+                        let out = placement.pair(k, n);
+                        let pair = [
+                            pan_gains(0.5 + 0.5 * spread * out),
+                            pan_gains(0.5 - 0.5 * spread * out),
+                        ];
+                        assert_eq!(pair_gains(spread, 0.0, out), pair);
+                    }
+                }
+            }
+        }
+    }
+
+    /// INNER clears the centre: with SPREAD at `s` and INNER at `i` every voice sits between `i`
+    /// times `s` and `s` out, on its own side, and in the same order across its side as before;
+    /// at INNER 1 every voice at SPREAD's edge. At SPREAD 0 both sides are whole, whatever INNER.
+    #[test]
+    fn inner_keeps_every_voice_in_its_sides_band() {
+        for placement in PLACEMENTS {
+            for n in 2..=10 {
+                for (s, i) in [(1.0, 0.25), (0.7, 0.6), (0.5, 1.0), (1.0, 1.0)] {
+                    let at: Vec<f64> = (0..n)
+                        .map(|k| heard(voice_gains(s, i, placement, k, n)))
+                        .collect();
+                    for (k, a) in at.iter().enumerate() {
+                        let out = a.abs();
+                        assert!(
+                            out >= i * s - 1e-6 && out <= s + 1e-6,
+                            "{placement:?}, {n} voices, SPREAD {s}, INNER {i}: voice {k} at {a}"
+                        );
+                        assert_eq!(a.signum(), placement.side(k, n), "voice {k}");
+                    }
+                    for a in 0..n {
+                        for b in 0..n {
+                            let (pa, pb) = (placement.place(a, n), placement.place(b, n));
+                            if placement.side(a, n) == placement.side(b, n) && pa.abs() < pb.abs() {
+                                assert!(at[a].abs() < at[b].abs() + 1e-9, "{placement:?} {n}");
+                            }
+                        }
+                    }
+                    if i == 1.0 {
+                        assert!(at.iter().all(|a| (a.abs() - s).abs() < 1e-6), "{at:?}");
+                    }
+                }
+                assert_eq!(voice_gains(0.0, 0.8, placement, 0, n), (1.0, 1.0));
+            }
+        }
+    }
+
+    /// What a display draws is where the gains put each voice and each pair.
+    #[test]
+    fn a_display_draws_each_voice_where_it_is_heard() {
+        for placement in PLACEMENTS {
+            for n in 2..=10 {
+                for k in 0..n {
+                    for (s, i) in [(0.3, 0.0), (1.0, 0.5), (0.8, 1.0)] {
+                        let at = voice_at(s, i, placement, k, n);
+                        let g = voice_gains(s, i, placement, k, n);
+                        assert!((heard(g) - at).abs() < 1e-6, "{placement:?} {k}/{n}: {at}");
+                        let out = placement.pair(k, n);
+                        let a = pair_at(s, i, out);
+                        assert!((heard(pair_gains(s, i, out)[0]) - a).abs() < 1e-6, "{a}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// A voice placed in the centre goes to the side its turn falls on, the left first, and only
+    /// as far as INNER takes it, so a little INNER moves it a little: EVEN's fifth of five, and
+    /// CENTER's first.
+    #[test]
+    fn a_voice_in_the_centre_takes_its_turns_side() {
+        assert_eq!(Placement::Even.place(4, 5), 0.0);
+        assert_eq!(Placement::Even.side(4, 5), -1.0);
+        assert_eq!(Placement::Centre.place(0, 8), 0.0);
+        assert_eq!(Placement::Centre.side(0, 8), -1.0);
+        // A voice past the count takes an earlier one's side, as it takes its place.
+        assert_eq!(Placement::Centre.side(8, 8), Placement::Centre.side(0, 8));
+        let a = heard(voice_gains(1.0, 0.01, Placement::Even, 4, 5));
+        assert!((a + 0.01).abs() < 1e-6, "{a}");
+        // Every other voice keeps its place's side.
+        for placement in PLACEMENTS {
+            for n in 2..=10 {
+                for k in 0..n {
+                    let p = placement.place(k, n);
+                    if p != 0.0 {
+                        assert_eq!(placement.side(k, n), p.signum());
+                    }
+                }
+            }
+        }
+    }
+
+    /// DOUBLE's pairs keep to the band too, still mirrored about the centre: a pair placed in the
+    /// centre (CENTER's first voice) opens to INNER's share either side.
+    #[test]
+    fn a_pair_keeps_to_the_band() {
+        for (out, i) in [(0.0, 0.4), (0.5, 0.4), (1.0, 0.4), (0.3, 1.0)] {
+            let [voice, twin] = pair_gains(0.8, i, out);
+            assert_eq!((voice.0, voice.1), (twin.1, twin.0), "out {out}");
+            let a = heard(voice);
+            assert!((a - 0.8 * band(i, out)).abs() < 1e-6, "out {out}: {a}");
+            assert!(a >= 0.8 * i - 1e-6, "out {out}: {a}");
+        }
+        assert_eq!(pair_gains(0.0, 0.7, 1.0), [pan_gains(0.5); 2]);
     }
 
     /// The trims: voices summed in power, as loud as one; the glide's share a sample, all of it

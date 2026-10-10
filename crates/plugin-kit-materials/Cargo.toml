@@ -1,0 +1,15 @@
+[package]
+name = "plugin-kit-materials"
+description = "The plug-ins' worn skins' materials: pictures placed and resampled at a scale, the displays' glass, a lit button's light and its translucent cap, dots filled as one shape, a dot-matrix display's lettering"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The plug-ins' resvg, for its tiny-skia: one Pixmap type in their builds.
+resvg = { version = "0.45", default-features = false }
+
+[lints]
+workspace = true

@@ -208,3 +208,30 @@ alike: their editors set parameters through the same wrapper.
 **Evidence (the Windows machine, 2026-10-07):** see the CA-72's R36 for Cubase. Here, on this
 change: `cargo test -p plugin-kit-learn --test vst3_host`, 6 passed; with the wrapper restored,
 4 failed.
+
+## K5. The worn skins' materials, from the CA-74
+
+**The owner, 2026-10-09:** asked, for the CA-72's realistic look, whether the CA-74's materials
+code (its glow, glowing caps and dot lettering) should move into plugin-kit rather than be
+copied: "plugin-kit".
+
+**Agent decisions, 2026-10-09** (not separately approved):
+- **`plugin-kit-materials`**, from the CA-74's `materials.rs` (its R36 to R38, R40): pictures
+  placed and resampled at a scale (`place`, `sprite`, `resample`, `widened`), a display's glass
+  (`glass`), a lit button's light on the surface round it (`Glow`), the translucent cap lit
+  from inside made from an opaque cap's picture (`lighting`), its sheen as SVG (`lit_caps`),
+  dots filled as one shape (`discs`, `fill`), a star's path, a rounded rectangle's path, and a
+  dot-matrix display's lettering, five dots by seven with descenders (`font`). It depends only on
+  resvg (0.45, the plug-ins'), for its tiny-skia.
+- **The plug-in's own stays with it:** its pictures (the opaque cap, the glass), its colours
+  and its SVG documents (`svg_over` in the CA-74). The colours a material takes are arguments:
+  a lit button's light (`Underlight`; the CA-74's red, `RED_LIGHT`) and a translucent cap's
+  (`Tint`, its lit and unlit colour of its glow and shade; the CA-74's red, `RED`, the same
+  arithmetic as before).
+
+**Evidence (the Linux reference machine, 2026-10-09):** the CA-74 on it (its branch
+`kit-materials` from `release-0.1`, the crate by path while this is on its branch): its strip
+(SCATTER and DOUBLE in use), its drop-down (twice) and its whole window with and without it
+drawn the same to the bit as before; its panel's and plug-in's tests (213) pass; rustfmt;
+clippy with `-D warnings`. This crate: rustfmt, clippy, its tests.
+

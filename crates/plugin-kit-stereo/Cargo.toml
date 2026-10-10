@@ -1,6 +1,6 @@
 [package]
 name = "plugin-kit-stereo"
-description = "The plug-ins' stereo and DRIVE's AUTO GAIN: a constant-power pan law, where SCATTER places the voices (EVEN, EDGES, CENTER) and DOUBLE its pairs, INNER's band on either side, the places' glide and the trims of voices summed; a correction for DRIVE's loudness measured off the audio thread, K-weighted, read without a lock and saved with the session"
+description = "The plug-ins' stereo and DRIVE's AUTO GAIN: a constant-power pan law, where SCATTER places the voices (EVEN, CENTER) and DOUBLE its pairs, INNER's band on either side, the places' glide and the trims of voices summed; a correction for DRIVE's loudness measured off the audio thread, K-weighted, read without a lock and saved with the session"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

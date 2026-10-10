@@ -1,7 +1,7 @@
 //! Where the voices sit in the stereo field and how loud: the pan law, SCATTER's placement of
 //! POLY's voices at full SPREAD and DOUBLE's pairs (the CA-74's R27, R28, R30 and R41), INNER's
-//! band on either side (K7), the glide a voice's place follows its controls with, and the trims
-//! of voices summed (R25, R28).
+//! band on either side (K7), which leaves EDGES nothing of its own (dropped with it), the glide
+//! a voice's place follows its controls with, and the trims of voices summed (R25, R28).
 
 /// The pan law: at `pan` (0 left, 0.5 centre, 1 right) each side's gain, of constant power
 /// (a voice as loud wherever it sits, so the centre does not outweigh the sides), both
@@ -15,8 +15,9 @@ pub fn pan_gains(pan: f64) -> (f32, f32) {
     )
 }
 
-/// Where SCATTER puts the voices POLY plays at full SPREAD, the player's choice of three (the
-/// CA-74's R30); each voice as loud wherever it sits ([`pan_gains`]).
+/// Where SCATTER puts the voices POLY plays at full SPREAD, the player's choice of two (the
+/// CA-74's R30; EDGES, a third, dropped with INNER, K7); each voice as loud wherever it sits
+/// ([`pan_gains`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Placement {
     /// Evenly spaced from edge to edge, however many voices play: taken left and right in
@@ -25,25 +26,26 @@ pub enum Placement {
     /// chord's first notes) are at the edges, and the field is filled without a hole.
     #[default]
     Even,
-    /// From the edges inwards, out to either side in turn, every voice from 60 % out and none
-    /// in the centre: the widest, its voices together at the sides (the CA-74's R27's).
-    Edges,
     /// From the centre outwards, by the golden ratio: the first voice in the centre and the
     /// next spread evenly about it, however many play: the narrowest.
     Centre,
 }
 
-/// [`Placement::Edges`]'s places, voice by voice; also the most voices placed apart.
-const EDGES: [f64; 10] = [-1.0, 1.0, -0.9, 0.9, -0.8, 0.8, -0.7, 0.7, -0.6, 0.6];
+/// The most voices placed apart.
+const MOST: usize = 10;
+
+/// How far out (0 to 1) DOUBLE's pair of one voice alone (POLY and UNISON off) sits at full
+/// SPREAD, for [`pair_at`] and [`pair_gains`]: all the way, whatever the placement, since it has
+/// no place among others (the CA-74's R41).
+pub const ALONE: f64 = 1.0;
 
 impl Placement {
     /// Where voice `k` of `n` (VOICES) sits at full SPREAD, -1 (left) to 1 (right). A voice
     /// past `n` (one letting go after VOICES was lowered) takes the place of `k` less `n`.
     pub fn place(self, k: usize, n: usize) -> f64 {
-        let n = n.clamp(2, EDGES.len());
+        let n = n.clamp(2, MOST);
         let k = k % n;
         match self {
-            Placement::Edges => EDGES[k],
             Placement::Centre => 2.0 * (0.5 + k as f64 * 0.618_033_988_749_894_8).fract() - 1.0,
             Placement::Even => {
                 let side = n / 2;
@@ -66,14 +68,11 @@ impl Placement {
     }
 
     /// How far out to either side DOUBLE's pair of voice `k` of `n` sits at full SPREAD, 0 to 1
-    /// (the CA-74's R41): with EDGES every pair at the edges; with EVEN and CENTER as far out as
-    /// the voice's own place, so each pair stays about the centre (a voice placed in the
-    /// centre, its pair there too).
+    /// (the CA-74's R41): as far out as the voice's own place, so each pair stays about the
+    /// centre (a voice placed in the centre, its pair there too, until INNER opens it). Every
+    /// pair at the edges, as EDGES had them, is INNER at 100 % (K7).
     pub fn pair(self, k: usize, n: usize) -> f64 {
-        match self {
-            Placement::Edges => 1.0,
-            _ => self.place(k, n).abs(),
-        }
+        self.place(k, n).abs()
     }
 
     /// The side voice `k` of `n` sits on, -1 (left) or 1 (right): its place's; a voice placed
@@ -83,26 +82,25 @@ impl Placement {
         let place = self.place(k, n);
         if place != 0.0 {
             place.signum()
-        } else if (k % n.clamp(2, EDGES.len())).is_multiple_of(2) {
+        } else if (k % n.clamp(2, MOST)).is_multiple_of(2) {
             -1.0
         } else {
             1.0
         }
     }
 
-    /// Its index (0..3), as a voices' mix carries it and a preset saves it, and back.
+    /// Its index (0..2), as a voices' mix carries it to the worker threads, and back (a
+    /// plug-in maps its own parameter's index).
     pub fn index(self) -> usize {
         match self {
             Placement::Even => 0,
-            Placement::Edges => 1,
-            Placement::Centre => 2,
+            Placement::Centre => 1,
         }
     }
 
     pub fn from_index(i: usize) -> Placement {
         match i {
-            1 => Placement::Edges,
-            2 => Placement::Centre,
+            1 => Placement::Centre,
             _ => Placement::Even,
         }
     }
@@ -124,8 +122,9 @@ pub fn voice_at(spread: f64, inner: f64, placement: Placement, k: usize, n: usiz
     spread * placement.side(k, n) * band(inner, placement.place(k, n).abs())
 }
 
-/// How far out to either side DOUBLE's pair `out` (0 to 1, [`Placement::pair`]) sits by `spread`
-/// and `inner` (0..1): where [`pair_gains`] puts it, for a display to draw it there.
+/// How far out to either side DOUBLE's pair `out` (0 to 1, [`Placement::pair`], or [`ALONE`] for
+/// a voice alone) sits by `spread` and `inner` (0..1): where [`pair_gains`] puts it, for a
+/// display to draw it there.
 pub fn pair_at(spread: f64, inner: f64, out: f64) -> f64 {
     spread * band(inner, out)
 }
@@ -147,10 +146,10 @@ pub fn voice_gains(
     }
 }
 
-/// DOUBLE's pair `out` (0 to 1, [`Placement::pair`]) by `spread` (0..1), in each side's band by
-/// `inner` (0..1, [`pair_at`]): the gains (left, right) of the voice, half the detune flat, that
-/// far to the right, and of its twin, half sharp, as far to the left (the CA-74's R28 and R41;
-/// K7).
+/// DOUBLE's pair `out` (0 to 1, [`Placement::pair`] or [`ALONE`]) by `spread` (0..1), in each
+/// side's band by `inner` (0..1, [`pair_at`]): the gains (left, right) of the voice, half the
+/// detune flat, that far to the right, and of its twin, half sharp, as far to the left (the
+/// CA-74's R28 and R41; K7).
 pub fn pair_gains(spread: f64, inner: f64, out: f64) -> [(f32, f32); 2] {
     let at = pair_at(spread, inner, out);
     [pan_gains(0.5 + 0.5 * at), pan_gains(0.5 - 0.5 * at)]
@@ -235,18 +234,6 @@ mod tests {
         assert_eq!(eight, [-7.0, 7.0, -3.0, 3.0, -5.0, 5.0, -1.0, 1.0]);
     }
 
-    /// EDGES: no voice in the centre, none nearer it than 60 %; voices taken in turn go to
-    /// either side in turn, from the edges inwards (the CA-74's R27's).
-    #[test]
-    fn edges_fills_the_field_from_its_edges() {
-        let places: Vec<f64> = (0..10).map(|k| Placement::Edges.place(k, 10)).collect();
-        for (k, p) in places.iter().enumerate() {
-            assert!(p.abs() >= 0.6, "voice {k} at {p}");
-            assert_eq!(*p < 0.0, k % 2 == 0, "voice {k} on the wrong side");
-        }
-        assert!(places.windows(2).all(|w| w[0].abs() >= w[1].abs()));
-    }
-
     /// CENTER: the first voice in the centre, the rest by the golden ratio about it, as the
     /// CA-74's are; never two in one place.
     #[test]
@@ -266,15 +253,17 @@ mod tests {
 
     #[test]
     fn a_placement_goes_by_its_index_and_back() {
-        for p in [Placement::Even, Placement::Edges, Placement::Centre] {
+        for p in PLACEMENTS {
             assert_eq!(Placement::from_index(p.index()), p);
         }
+        assert_eq!((Placement::Even.index(), Placement::Centre.index()), (0, 1));
+        assert_eq!(Placement::from_index(7), Placement::Even);
         assert_eq!(Placement::default(), Placement::Even);
     }
 
     /// DOUBLE's pairs mirror each other about the centre (the twin to the left, the voice as far
-    /// to the right), whole at no SPREAD; EDGES puts every pair at the edges, EVEN and CENTER
-    /// as far out as the voice's own place.
+    /// to the right), whole at no SPREAD; every pair at the edge, as EDGES had them, is INNER at
+    /// 100 %, to the bit, whatever the placement and VOICES.
     #[test]
     fn a_pair_mirrors_about_the_centre() {
         for out in [0.0, 0.3, 1.0] {
@@ -282,17 +271,45 @@ mod tests {
             assert_eq!((voice.0, voice.1), (twin.1, twin.0), "out {out}");
         }
         assert_eq!(pair_gains(0.0, 0.0, 1.0), [pan_gains(0.5); 2]);
-        assert_eq!(Placement::Edges.pair(3, 8), 1.0);
+        for p in PLACEMENTS {
+            for n in 2..=10 {
+                for k in 0..n {
+                    for s in [0.0, 0.25, 0.6, 1.0] {
+                        let out = p.pair(k, n);
+                        assert_eq!(pair_at(s, 1.0, out), s, "{p:?} {k} of {n}, SPREAD {s}");
+                        assert_eq!(pair_gains(s, 1.0, out), pair_gains(s, 0.0, ALONE));
+                    }
+                }
+            }
+        }
+        assert_eq!(voice_gains(0.0, 0.0, Placement::Even, 0, 4), (1.0, 1.0));
+        assert_eq!(voice_gains(1.0, 0.0, Placement::Even, 0, 4), pan_gains(0.0));
+    }
+
+    /// A lone voice's pair (POLY and UNISON off) is at SPREAD's edge whatever INNER, since it has
+    /// no place among others (the CA-74's R41).
+    #[test]
+    fn a_lone_voices_pair_is_at_spreads_edge_whatever_inner() {
+        for s in [0.0, 0.3, 0.75, 1.0] {
+            for i in [0.0, 0.2, 0.5, 0.9, 1.0] {
+                assert_eq!(pair_at(s, i, ALONE), s, "SPREAD {s}, INNER {i}");
+            }
+        }
+    }
+
+    /// DOUBLE's pairs (the CA-74's R41): each as far out as its voice's place, CENTER's first in
+    /// the centre and EVEN's first at the edges (the CA-74's test, moved here).
+    #[test]
+    fn double_pairs_are_as_far_out_as_their_voices_places() {
+        for p in PLACEMENTS {
+            for n in 2..=10 {
+                for k in 0..n {
+                    assert_eq!(p.pair(k, n), p.place(k, n).abs(), "{p:?} {k} of {n}");
+                }
+            }
+        }
         assert_eq!(Placement::Centre.pair(0, 8), 0.0);
-        assert_eq!(
-            Placement::Even.pair(2, 8),
-            Placement::Even.place(2, 8).abs()
-        );
-        assert_eq!(voice_gains(0.0, 0.0, Placement::Edges, 0, 4), (1.0, 1.0));
-        assert_eq!(
-            voice_gains(1.0, 0.0, Placement::Edges, 0, 4),
-            pan_gains(0.0)
-        );
+        assert_eq!(Placement::Even.pair(0, 8), 1.0);
     }
 
     /// Where a voice's gains put it, -1 (left) to 1 (right), back from the pan law.
@@ -300,7 +317,7 @@ mod tests {
         4.0 * f64::from(g.1).atan2(f64::from(g.0)) / std::f64::consts::PI - 1.0
     }
 
-    const PLACEMENTS: [Placement; 3] = [Placement::Even, Placement::Edges, Placement::Centre];
+    const PLACEMENTS: [Placement; 2] = [Placement::Even, Placement::Centre];
 
     /// INNER at 0 changes nothing: every voice and every pair, at every SPREAD, gets the gains it
     /// got before INNER, to the bit.

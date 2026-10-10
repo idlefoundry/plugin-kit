@@ -1,0 +1,18 @@
+[package]
+name = "plugin-kit-stereo"
+description = "The plug-ins' stereo and DRIVE's AUTO GAIN: a constant-power pan law, where SCATTER places the voices (EVEN, EDGES, CENTER) and DOUBLE its pairs, the places' glide and the trims of voices summed; a correction for DRIVE's loudness measured off the audio thread, K-weighted, read without a lock and saved with the session"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+libm.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -556,6 +556,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "plugin-kit-stereo"
+version = "0.3.1"
+dependencies = [
+ "libm",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "plugin-kit-update"
 version = "0.3.1"
 dependencies = [

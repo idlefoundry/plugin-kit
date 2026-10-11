@@ -250,8 +250,6 @@ unsafe fn wnd_proc_inner(
         | WM_RBUTTONUP | WM_XBUTTONDOWN | WM_XBUTTONUP => {
             let mut window = crate::Window::new(window_state.create_window());
 
-            let mut mouse_button_counter = window_state.mouse_button_counter.get();
-
             let button = match msg {
                 WM_LBUTTONDOWN | WM_LBUTTONUP => Some(MouseButton::Left),
                 WM_MBUTTONDOWN | WM_MBUTTONUP => Some(MouseButton::Middle),
@@ -265,6 +263,22 @@ unsafe fn wnd_proc_inner(
             };
 
             if let Some(button) = button {
+                // The pointer's place, the message's own, before the press or release (CA-72
+                // patch, PATCHES.md): a press can come with no `WM_MOUSEMOVE` before it (the
+                // pointer set where it is, or the window come under it, but not moved since), and
+                // the handler took it where the pointer had last been seen.
+                let x = (lparam & 0xFFFF) as i16 as i32;
+                let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
+                let position =
+                    PhyPoint { x, y }.to_logical(&window_state.window_info.borrow());
+                let modifiers =
+                    window_state.keyboard_state.borrow().get_modifiers_from_mouse_wparam(wparam);
+                let moved = Event::Mouse(MouseEvent::CursorMoved { position, modifiers });
+                window_state.handle_event(&mut window, moved);
+                // Read after that call, which may have let other presses and releases through (a
+                // modal loop run from the handler), so that they stay counted.
+                let mut mouse_button_counter = window_state.mouse_button_counter.get();
+
                 let event = match msg {
                     WM_LBUTTONDOWN | WM_MBUTTONDOWN | WM_RBUTTONDOWN | WM_XBUTTONDOWN => {
                         // Capture the mouse cursor on button down

@@ -250,8 +250,6 @@ unsafe fn wnd_proc_inner(
         | WM_RBUTTONUP | WM_XBUTTONDOWN | WM_XBUTTONUP => {
             let mut window = crate::Window::new(window_state.create_window());
 
-            let mut mouse_button_counter = window_state.mouse_button_counter.get();
-
             let button = match msg {
                 WM_LBUTTONDOWN | WM_LBUTTONUP => Some(MouseButton::Left),
                 WM_MBUTTONDOWN | WM_MBUTTONUP => Some(MouseButton::Middle),
@@ -277,6 +275,9 @@ unsafe fn wnd_proc_inner(
                     window_state.keyboard_state.borrow().get_modifiers_from_mouse_wparam(wparam);
                 let moved = Event::Mouse(MouseEvent::CursorMoved { position, modifiers });
                 window_state.handle_event(&mut window, moved);
+                // Read after that call, which may have let other presses and releases through (a
+                // modal loop run from the handler), so that they stay counted.
+                let mut mouse_button_counter = window_state.mouse_button_counter.get();
 
                 let event = match msg {
                     WM_LBUTTONDOWN | WM_MBUTTONDOWN | WM_RBUTTONDOWN | WM_XBUTTONDOWN => {

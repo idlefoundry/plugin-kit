@@ -98,7 +98,9 @@ And one for macOS, in `src/macos/view.rs` (the CA-72's `docs/decisions.md` R56, 
    the handler with the pointer where it had last been seen: in Cubase 15, a click on the
    CA-72's POLY tab, the pointer put there at once, did nothing, and the next click took. Now
    `WM_LBUTTONDOWN` and the other buttons' messages give the handler a `CursorMoved` at the
-   message's own place (its `lParam`, as `WM_MOUSEMOVE` reads it) first. The CA-72's test
+   message's own place (its `lParam`, as `WM_MOUSEMOVE` reads it) first. The count of buttons held
+   (which keeps the pointer captured) is read after that call, so that a press or release a
+   modal loop run from the handler lets through is still counted. The CA-72's test
    `a_press_with_no_move_before_it_lands_where_it_is` (`crates/ca72-plugin/src/editor.rs`,
    Windows) presses POLY with no move before it; without this change nothing is set.
 

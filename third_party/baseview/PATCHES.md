@@ -9,9 +9,9 @@ compiler warnings (`non_snake_case` in `src/win/drop_target.rs`, and
 `mismatched_lifetime_syntaxes`). `src/macos/window.rs` has one `use` list in the order
 today's rustfmt gives it, so that `cargo fmt --all` leaves the tree as it is.
 
-Three changes for Windows, in `src/win/window.rs`, `src/win/drop_target.rs`, `src/event.rs`
-and `src/window.rs` (the CA-72's `docs/decisions.md` R26, R28 and R34), and one for macOS
-(below):
+Five changes for Windows (1 to 3, 5 and 6), in `src/win/window.rs`, `src/win/drop_target.rs`,
+`src/win/escape.rs`, `src/event.rs` and `src/window.rs` (the first three the CA-72's
+`docs/decisions.md` R26, R28 and R34), and one for macOS (4, below):
 
 1. **The window procedure never calls the handler while it is busy.** baseview keeps the
    window's handler in a `RefCell` and borrows it for each event. A message can be sent to
@@ -71,9 +71,8 @@ and `src/window.rs` (the CA-72's `docs/decisions.md` R26, R28 and R34), and one 
    at an arrow key, and the drawer's list never had it. Now `Window::set_wants_keys(true)`
    has the window answer `DLGC_WANTALLKEYS` (and the arrows, Tab and characters), and `false`,
    the default, leaves the question to `DefWindowProcW` as before, so that the dialog keeps its
-   keys while the handler does not want them. On macOS and X11 the call does nothing. (REAPER
-   keeps Escape whatever the window answers, and closes its FX window, unless the plug-in's
-   "Send all keyboard input to plug-in" is on.)
+   keys while the handler does not want them. On macOS and X11 the call does nothing. REAPER's
+   CLAP window processes Escape before this question; change 6 handles that case.
 
    The CA-72's test `the_editor_asks_a_dialog_for_every_key_only_while_it_holds_them` checks
    the answer with the drawer and a control's menu open and shut.
@@ -103,6 +102,36 @@ And one for macOS, in `src/macos/view.rs` (the CA-72's `docs/decisions.md` R56, 
    modal loop run from the handler lets through is still counted. The CA-72's test
    `a_press_with_no_move_before_it_lands_where_it_is` (`crates/ca72-plugin/src/editor.rs`,
    Windows) presses POLY with no move before it; without this change nothing is set.
+
+6. **A focused editor that holds the keyboard gets Escape before the host does** (in
+   `src/win/escape.rs` and `src/win/window.rs`, 2026-10-11, the CA-74's). In REAPER
+   7.82, CLAP, Escape closed the CA-74's FX window with QUALITY's menu, settings, or a readout
+   edit open. The existing dialog answer was already `0x87` (`DLGC_WANTALLKEYS` and the other
+   flags), and the baseline window-procedure trace showed neither an Escape message nor a
+   dialog-code query before the host closed the window. Changing that answer cannot fix a
+   key the host consumes before dispatching or querying it. Microsoft's
+   [GetMsgProc contract](https://learn.microsoft.com/en-us/windows/win32/winmsg/getmsgproc)
+   allows a `WH_GETMESSAGE` hook to see and replace a retrieved message before the host's
+   processing; [Surge's REAPER CLAP fix](https://github.com/surge-synthesizer/surge/pull/8368)
+   uses a message hook too. No code from that implementation is copied here.
+
+   Each DLL and GUI thread now registers a hook for its parented windows. It delivers only a
+   removed `WM_KEYDOWN` for Escape, for the focused registered HWND, while its existing
+   `wants_keys` flag is true. It first replaces the queued message with `WM_NULL`, then sends
+   the original to that window procedure, holding its state alive and no registry borrow
+   across the handler call. Peeks, other windows and keys, and idle Escape keep their old
+   path. The last window's destruction or GUI thread teardown removes the hook; window
+   destruction after the registry's TLS teardown safely skips the unavailable registry.
+   All this code is Windows-only; neither macOS nor Linux behavior changes.
+
+   Three native Windows tests cover retrieval, peeking, focus, idle Escape, Space, multiple
+   editors, destruction inside the handler and destruction after thread-local teardown.
+   Disabling hook registration makes the two retrieval tests fail; all three pass with it.
+   The renamed Highstead ESC build passed REAPER 7.82 CLAP menu and readout Escape, Enter and
+   Backspace; idle Escape closes the FX window and Space controls transport, as in its VST3.
+   REAPER VST3 menu Escape and readout typing, and Cubase Pro 15 VST3 menu Escape also passed.
+   The manifest enables winapi's `processthreadsapi` for the GUI thread ID and allows upstream's
+   existing manual `MouseCursor::default` under `derivable_impls` for standalone Clippy checks.
 
 Upstream's master has since rewritten the Windows backend and the handler's interface; to
 move to it, the editor must be ported, and the tests above show whether it still needs this.

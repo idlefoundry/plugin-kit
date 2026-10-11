@@ -1,5 +1,6 @@
 mod cursor;
 mod drop_target;
+mod escape;
 mod keyboard;
 mod window;
 

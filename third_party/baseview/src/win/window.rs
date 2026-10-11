@@ -270,8 +270,7 @@ unsafe fn wnd_proc_inner(
                 // the handler took it where the pointer had last been seen.
                 let x = (lparam & 0xFFFF) as i16 as i32;
                 let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
-                let position =
-                    PhyPoint { x, y }.to_logical(&window_state.window_info.borrow());
+                let position = PhyPoint { x, y }.to_logical(&window_state.window_info.borrow());
                 let modifiers =
                     window_state.keyboard_state.borrow().get_modifiers_from_mouse_wparam(wparam);
                 let moved = Event::Mouse(MouseEvent::CursorMoved { position, modifiers });

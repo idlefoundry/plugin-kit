@@ -265,6 +265,19 @@ unsafe fn wnd_proc_inner(
             };
 
             if let Some(button) = button {
+                // The pointer's place, the message's own, before the press or release (CA-72
+                // patch, PATCHES.md): a press can come with no `WM_MOUSEMOVE` before it (the
+                // pointer set where it is, or the window come under it, but not moved since), and
+                // the handler took it where the pointer had last been seen.
+                let x = (lparam & 0xFFFF) as i16 as i32;
+                let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
+                let position =
+                    PhyPoint { x, y }.to_logical(&window_state.window_info.borrow());
+                let modifiers =
+                    window_state.keyboard_state.borrow().get_modifiers_from_mouse_wparam(wparam);
+                let moved = Event::Mouse(MouseEvent::CursorMoved { position, modifiers });
+                window_state.handle_event(&mut window, moved);
+
                 let event = match msg {
                     WM_LBUTTONDOWN | WM_MBUTTONDOWN | WM_RBUTTONDOWN | WM_XBUTTONDOWN => {
                         // Capture the mouse cursor on button down

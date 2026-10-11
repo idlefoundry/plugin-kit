@@ -1,1 +1,4 @@
 /target
+# Build output and lockfiles of the vendored crates, checked on their own (their PATCHES.md).
+third_party/*/target/
+third_party/*/Cargo.lock

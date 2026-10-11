@@ -151,6 +151,7 @@ unsafe extern "system" fn wnd_proc(
 
         // NOTE: This is not handled in `wnd_proc_inner` because of the deferred task loop above
         if msg == WM_NCDESTROY {
+            super::escape::unregister(&window_state);
             RevokeDragDrop(hwnd);
             unregister_wnd_class(window_state.window_class);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
@@ -269,8 +270,7 @@ unsafe fn wnd_proc_inner(
                 // the handler took it where the pointer had last been seen.
                 let x = (lparam & 0xFFFF) as i16 as i32;
                 let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
-                let position =
-                    PhyPoint { x, y }.to_logical(&window_state.window_info.borrow());
+                let position = PhyPoint { x, y }.to_logical(&window_state.window_info.borrow());
                 let modifiers =
                     window_state.keyboard_state.borrow().get_modifiers_from_mouse_wparam(wparam);
                 let moved = Event::Mouse(MouseEvent::CursorMoved { position, modifiers });
@@ -557,6 +557,10 @@ pub(super) struct WindowState {
 }
 
 impl WindowState {
+    pub(super) fn wants_keys(&self) -> bool {
+        self.wants_keys.get()
+    }
+
     pub(super) fn create_window(&self) -> Window {
         Window { state: self }
     }
@@ -854,6 +858,9 @@ impl Window<'_> {
             OleInitialize(null_mut());
             RegisterDragDrop(hwnd, Rc::as_ptr(&drop_target) as LPDROPTARGET);
 
+            if parented && !hwnd.is_null() {
+                super::escape::register(&window_state);
+            }
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Rc::into_raw(window_state) as *const _ as _);
             SetTimer(hwnd, WIN_FRAME_TIMER, 15, None);
 
@@ -940,4 +947,186 @@ unsafe impl HasRawDisplayHandle for Window<'_> {
 
 pub fn copy_to_clipboard(_data: &str) {
     todo!()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use keyboard_types::{Key, KeyState};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use winapi::um::winuser::{
+        PeekMessageW, SendMessageW, PM_NOREMOVE, PM_REMOVE, VK_ESCAPE, VK_SPACE, WM_NULL,
+    };
+
+    struct Handler(Arc<AtomicUsize>);
+
+    impl WindowHandler for Handler {
+        fn on_frame(&mut self, _: &mut crate::Window) {}
+
+        fn on_event(&mut self, window: &mut crate::Window, event: Event) -> EventStatus {
+            if matches!(event, Event::Keyboard(ref key) if key.key == Key::Escape && key.state == KeyState::Down)
+            {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                window.set_wants_keys(false);
+            }
+            EventStatus::Captured
+        }
+    }
+
+    fn options() -> WindowOpenOptions {
+        WindowOpenOptions {
+            title: "baseview Escape regression".into(),
+            size: Size::new(100.0, 100.0),
+            scale: WindowScalePolicy::ScaleFactor(1.0),
+            #[cfg(feature = "opengl")]
+            gl_config: None,
+        }
+    }
+
+    // A host can consume Escape immediately after retrieving it, without consulting
+    // WM_GETDLGCODE. The hook must deliver it before that point, and only while held.
+    #[test]
+    fn held_escape_reaches_the_handler_before_host_accelerators() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let (_, parent) = Window::open(false, null_mut(), options(), {
+            let count = count.clone();
+            move |_| Handler(count)
+        });
+        let (_, first) = Window::open(true, parent, options(), {
+            let count = count.clone();
+            move |_| Handler(count)
+        });
+        let (_, second) = Window::open(true, parent, options(), {
+            let count = count.clone();
+            move |_| Handler(count)
+        });
+        // SAFETY: these windows are live and owned by this test thread. The queue is
+        // queried on that same thread, as a host message loop would query it.
+        unsafe {
+            assert!(!parent.is_null() && !first.is_null() && !second.is_null());
+            SetFocus(first);
+            assert_eq!(GetFocus(), first);
+            let state = &*(GetWindowLongPtrW(first, GWLP_USERDATA) as *const WindowState);
+            assert_eq!(SendMessageW(first, WM_GETDLGCODE, 0, 0), 0);
+            let mut message: MSG = std::mem::zeroed();
+            assert_ne!(PostMessageW(first, WM_KEYDOWN, VK_ESCAPE as WPARAM, 1 | (1 << 16)), 0);
+            assert_ne!(PeekMessageW(&mut message, first, WM_KEYDOWN, WM_KEYDOWN, PM_REMOVE), 0);
+            assert_eq!(message.message, WM_KEYDOWN); // Idle Escape stays the host's.
+            assert_eq!(count.load(Ordering::SeqCst), 0);
+
+            state.wants_keys.set(true);
+            assert_ne!(SendMessageW(first, WM_GETDLGCODE, 0, 0) & DLGC_WANTALLKEYS as LRESULT, 0);
+            assert_ne!(PostMessageW(first, WM_KEYDOWN, VK_ESCAPE as WPARAM, 1 | (1 << 16)), 0);
+            assert_ne!(PeekMessageW(&mut message, first, WM_KEYDOWN, WM_KEYDOWN, PM_NOREMOVE), 0);
+            assert_eq!(message.message, WM_KEYDOWN);
+            assert_eq!(count.load(Ordering::SeqCst), 0); // Peeking cannot deliver twice.
+            assert_ne!(PeekMessageW(&mut message, first, WM_KEYDOWN, WM_KEYDOWN, PM_REMOVE), 0);
+            assert_eq!(message.message, WM_NULL);
+            assert_eq!(count.load(Ordering::SeqCst), 1);
+            assert!(!state.wants_keys.get()); // The handler returned the keyboard.
+
+            state.wants_keys.set(true);
+            SetFocus(second);
+            assert_ne!(PostMessageW(first, WM_KEYDOWN, VK_ESCAPE as WPARAM, 1 | (1 << 16)), 0);
+            assert_ne!(PeekMessageW(&mut message, first, WM_KEYDOWN, WM_KEYDOWN, PM_REMOVE), 0);
+            assert_eq!(message.message, WM_KEYDOWN); // A window without focus takes nothing.
+            assert_eq!(count.load(Ordering::SeqCst), 1);
+
+            DestroyWindow(first); // Closing one editor leaves the other's hook alive.
+            let state = &*(GetWindowLongPtrW(second, GWLP_USERDATA) as *const WindowState);
+            state.wants_keys.set(true);
+            assert_ne!(PostMessageW(second, WM_KEYDOWN, VK_SPACE as WPARAM, 1), 0);
+            assert_ne!(PeekMessageW(&mut message, second, WM_KEYDOWN, WM_KEYDOWN, PM_REMOVE), 0);
+            assert_eq!(message.message, WM_KEYDOWN); // Other keys keep their existing path.
+            assert_ne!(PostMessageW(second, WM_KEYDOWN, VK_ESCAPE as WPARAM, 1 | (1 << 16)), 0);
+            assert_ne!(PeekMessageW(&mut message, second, WM_KEYDOWN, WM_KEYDOWN, PM_REMOVE), 0);
+            assert_eq!(message.message, WM_NULL);
+            assert_eq!(count.load(Ordering::SeqCst), 2);
+            DestroyWindow(second);
+            DestroyWindow(parent);
+        }
+    }
+
+    struct ClosingHandler(Arc<AtomicUsize>);
+
+    impl WindowHandler for ClosingHandler {
+        fn on_frame(&mut self, _: &mut crate::Window) {}
+
+        fn on_event(&mut self, window: &mut crate::Window, event: Event) -> EventStatus {
+            if matches!(event, Event::Keyboard(ref key) if key.key == Key::Escape && key.state == KeyState::Down)
+            {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                if let RawWindowHandle::Win32(handle) = window.raw_window_handle() {
+                    // SAFETY: the handler's own live window, on its owning thread. This
+                    // deliberately destroys it during the hook's synchronous dispatch.
+                    unsafe { DestroyWindow(handle.hwnd as HWND) };
+                }
+            }
+            EventStatus::Captured
+        }
+    }
+
+    #[test]
+    fn the_escape_handler_can_destroy_its_window() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let (_, parent) = Window::open(false, null_mut(), options(), {
+            let count = count.clone();
+            move |_| Handler(count)
+        });
+        let (_, child) = Window::open(true, parent, options(), {
+            let count = count.clone();
+            move |_| ClosingHandler(count)
+        });
+        // SAFETY: the test owns both HWNDs and this thread's queue. No state reference
+        // survives the child handler's deliberate destruction of its window.
+        unsafe {
+            assert!(!parent.is_null() && !child.is_null());
+            SetFocus(child);
+            assert_eq!(GetFocus(), child);
+            let state = &*(GetWindowLongPtrW(child, GWLP_USERDATA) as *const WindowState);
+            state.wants_keys.set(true);
+            let mut message: MSG = std::mem::zeroed();
+            assert_ne!(PostMessageW(child, WM_KEYDOWN, VK_ESCAPE as WPARAM, 1 | (1 << 16)), 0);
+            assert_ne!(PeekMessageW(&mut message, child, WM_KEYDOWN, WM_KEYDOWN, PM_REMOVE), 0);
+            assert_eq!(message.message, WM_NULL);
+            assert_eq!(count.load(Ordering::SeqCst), 1);
+            assert_eq!(winapi::um::winuser::IsWindow(child), 0);
+            DestroyWindow(parent);
+        }
+    }
+
+    struct LateWindow(HWND);
+
+    impl Drop for LateWindow {
+        fn drop(&mut self) {
+            // SAFETY: this thread still owns the HWND. Its destructor intentionally runs
+            // after the hook registry's destructor, as a host's cleanup could do.
+            unsafe { DestroyWindow(self.0) };
+        }
+    }
+
+    thread_local! {
+        static LATE_WINDOW: RefCell<Option<LateWindow>> = const { RefCell::new(None) };
+    }
+
+    #[test]
+    fn windows_can_be_destroyed_after_the_hook_registrys_thread_local_teardown() {
+        std::thread::spawn(|| {
+            // TLS destructors run in reverse initialization order: register this first.
+            LATE_WINDOW.with(|_| {});
+            let count = Arc::new(AtomicUsize::new(0));
+            let (_, parent) = Window::open(false, null_mut(), options(), {
+                let count = count.clone();
+                move |_| Handler(count)
+            });
+            let (_, child) = Window::open(true, parent, options(), move |_| Handler(count));
+            assert!(!parent.is_null() && !child.is_null());
+            LATE_WINDOW.with(|late| *late.borrow_mut() = Some(LateWindow(parent)));
+        })
+        .join()
+        .expect("GUI thread teardown must not panic in the window procedure");
+    }
 }

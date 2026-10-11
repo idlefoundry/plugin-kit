@@ -415,3 +415,35 @@ from `mac-fixes` (5cf2b39), merged after it (K8), in the order agreed with the C
   file for file.
 - **Linux:** the kit's fmt, Clippy with warnings denied and tests (71 passed) pass on each
   branch.
+
+## K10. On Windows, a held Escape reaches the editor before the host takes it (baseview change 6)
+
+**The owner, 2026-10-11:** a host test of the CA-74 on Windows found that in REAPER 7.82, CLAP,
+Escape closed the plug-in's window with a menu open or a value being typed (as VST3 it closed the
+menu); asked, the owner had the fault fixed by a Codex worker ("preferably send codex agents to
+fix them").
+
+**Decisions, 2026-10-11** (the worker's, reviewed by the CA-74's lead; not separately approved):
+- **The cause:** REAPER takes Escape from the queue for a CLAP's window before it asks the window
+  `WM_GETDLGCODE` or dispatches the key, so change 3's answer (`DLGC_WANTALLKEYS` while the
+  editor holds the keyboard) never comes into it. A trace of the window procedure showed neither
+  the key nor the question before REAPER closed its window.
+- **The fix:** each GUI thread with a parented baseview window installs a `WH_GETMESSAGE` hook
+  (`third_party/baseview/src/win/escape.rs`). It acts only on a removed `WM_KEYDOWN` for Escape
+  to a registered window that has the focus and holds the keyboard (`set_wants_keys`): it empties
+  the queued message and sends the key to that window instead. Every other key, a peek, an
+  unfocused window and an idle Escape keep their path, so REAPER's shortcuts work as before.
+  The hook goes with the thread's last window; destruction inside the handler and after the
+  thread's teardown are safe. Surge's REAPER fix uses a message hook too; no code was copied.
+- **Numbered 6:** change 5 is the CA-72's press fix (K9). Both are Windows-only; macOS and Linux
+  are unchanged. The README's baseview row counts five changes for Windows and one for macOS.
+
+**Evidence (2026-10-11):** three native Windows tests in `src/win/window.rs` (retrieval, peeking,
+focus, idle Escape, Space, two editors, destruction inside the handler and after the thread's
+teardown): the two retrieval tests fail with the hook's registration disabled; all three pass,
+on Windows with MSVC, after the rebase onto K9. Clippy with warnings denied passes for
+`x86_64-pc-windows-gnu`, with and without all features; the kit's own checks pass (71 tests).
+In REAPER 7.82 (CLAP and VST3) and Cubase 15 (VST3), the CA-74's renamed build closed QUALITY's
+and the settings menus and cancelled a readout's typing with Escape, its window kept, Enter and
+Backspace working; idle Escape and Space matched the VST3. The CA-72 has the same path and takes
+this as its own baseview change 6.

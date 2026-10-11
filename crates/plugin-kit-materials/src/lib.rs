@@ -186,6 +186,34 @@ pub fn star_path(x: f64, y: f64, r: f64) -> String {
     d
 }
 
+/// A gear of eight teeth about (`x`, `y`), `r` to its teeth's tips, its hub open: the
+/// settings key's mark (typefaces have none). Each tooth is narrower at its tip than at its
+/// root. The CA-74's (its R-SETTINGS); the CA-72's (its R-SKIN) differs from it by a hair.
+pub fn gear_path(x: f64, y: f64, r: f64) -> String {
+    let (root, hub) = (r * 0.7, r * 0.34);
+    let mut d = String::new();
+    for k in 0..8 {
+        let a = std::f64::consts::TAU * f64::from(k) / 8.0;
+        for (da, rr) in [(-0.21, root), (-0.12, r), (0.12, r), (0.21, root)] {
+            d.push_str(&format!(
+                "{}{} {} ",
+                if d.is_empty() { "M" } else { "L" },
+                N(x + rr * (a + da).cos()),
+                N(y + rr * (a + da).sin())
+            ));
+        }
+    }
+    d.push_str(&format!(
+        "Z M {} {} a {h} {h} 0 1 0 {} 0 a {h} {h} 0 1 0 {} 0 Z",
+        N(x - hub),
+        N(y),
+        N(2.0 * hub),
+        N(-2.0 * hub),
+        h = N(hub)
+    ));
+    d
+}
+
 /// A cap `k` times as wide as it is tall, made from the square one: its left and right
 /// halves, the middle column drawn out between them.
 pub fn widened(p: &Pixmap, k: f64) -> Pixmap {
@@ -865,6 +893,41 @@ pub mod font {
             for c in '!'..='~' {
                 assert!(seen.insert(glyph(c)), "{c:?} is drawn as another is");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod gear_tests {
+    use super::*;
+
+    /// The gear filled from its open hub out to its teeth's tips, eight teeth all round with
+    /// the face showing between them.
+    #[test]
+    fn a_gear_has_eight_teeth_and_an_open_hub() {
+        let (c, r) = (50.0, 40.0);
+        let svg = format!(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'><path d='{}' fill='#000' fill-rule='evenodd'/></svg>",
+            gear_path(c, c, r)
+        );
+        let tree = resvg::usvg::Tree::from_str(&svg, &resvg::usvg::Options::default())
+            .expect("the gear's path parses");
+        let mut p = Pixmap::new(100, 100).expect("a frame");
+        resvg::render(&tree, Transform::identity(), &mut p.as_mut());
+        let at = |rr: f64, a: f64| {
+            let (x, y) = (c + rr * a.cos(), c + rr * a.sin());
+            p.pixel(x as u32, y as u32).expect("inside").alpha()
+        };
+        assert_eq!(at(0.0, 0.0), 0, "the hub open");
+        for k in 0..8 {
+            let a = std::f64::consts::TAU * f64::from(k) / 8.0;
+            assert_eq!(at(0.55 * r, a), 255, "the body at tooth {k}");
+            assert_eq!(at(0.9 * r, a), 255, "tooth {k}");
+            assert_eq!(
+                at(0.9 * r, a + std::f64::consts::TAU / 16.0),
+                0,
+                "a gap after {k}"
+            );
         }
     }
 }

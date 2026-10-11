@@ -345,3 +345,29 @@ EDGES against EVEN with INNER 55 % measured the same stereo width (side over mid
 0.05 dB, the left-right correlation within 0.006); a single note, the worst case, differed by
 about 2 dB of left-right balance on notes already 12 to 17 dB to one side, where plain EVEN,
 the reference, differed by 6 to 8 dB.
+
+## K8. The CA-72's two macOS fixes; the settings key's gear; DOUBLE_CENTS gone
+
+**The owner, 2026-10-11**, of the CA-72's two macOS fixes, which the CA-74 takes from the kit
+(its baseview and clap-wrapper are the kit's `third_party/`): "Fix them"; and of the gear both
+plug-ins now draw, and the stereo constant the CA-74 stopped using: "Yup, tidy this up."
+
+**Agent decisions, 2026-10-11** (not separately approved), on branch `mac-fixes` from the
+`editor` branch's f22e2a5 (the CA-74's pin), so the `editor` branch's own work is untouched:
+- **baseview change 4** (the CA-72's a0f06eb): on macOS each press and release reports the
+  event's own position first, so the first click into a floating window Bitwig Studio sent no
+  mouseMoved to lands where it is. **clap-wrapper change 5** (the CA-72's 8030fcd, its R-MAC):
+  the AUv2 wrapper answers a plug-in's request to flush at the next idle while no block is
+  rendered, so an editor's change takes in GarageBand while its transport is stopped. Both
+  applied unchanged: the kit's vendored copies were the CA-72's, byte for byte, before them;
+  their `PATCHES.md` entries came with them.
+- **`gear_path`** in `plugin-kit-materials`, beside `star_path`: the settings key's mark, the
+  CA-74's proportions (its R-SETTINGS); the CA-72's (its R-SKIN) is the same shape within a
+  hair and can take this one at its next pin (`a_gear_has_eight_teeth_and_an_open_hub`).
+- **`place::DOUBLE_CENTS` removed** from `plugin-kit-stereo`: it was the CA-74's 20 cents (its
+  R28); the CA-74 now carries 100 as the CA-72 does (its R-DETUNE), and nothing in the kit or
+  the plug-ins read it.
+
+**Evidence (the Linux reference machine, 2026-10-11):** the kit's tests and Clippy with
+warnings denied pass. The macOS fixes are the CA-72's, tried there in Bitwig and GarageBand;
+the CA-74's build on this branch is tried on the Mac.

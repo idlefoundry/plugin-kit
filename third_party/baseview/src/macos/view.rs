@@ -61,6 +61,12 @@ macro_rules! add_mouse_button_class_method {
 
             let modifiers = unsafe { NSEvent::modifierFlags(event) };
 
+            // The pointer where the button went down or up, first: a click into a window that
+            // has had no `mouseMoved:` since the pointer came onto it (a host's floating plug-in
+            // window not yet in front: Bitwig Studio) would otherwise be at the last place the
+            // handler was told of (the CA-72's `third_party/baseview/PATCHES.md`, change 4).
+            cursor_at(this, &state, event, modifiers);
+
             state.trigger_event(Event::Mouse($event_ty {
                 button: $button,
                 modifiers: make_modifiers(modifiers),
@@ -388,13 +394,19 @@ extern "C" fn update_tracking_areas(this: &Object, _self: Sel, _: id) {
 
 extern "C" fn mouse_moved(this: &Object, _sel: Sel, event: id) {
     let state = unsafe { WindowState::from_view(this) };
+    let modifiers = unsafe { NSEvent::modifierFlags(event) };
+    cursor_at(this, &state, event, modifiers);
+}
 
+/// The pointer at `event`'s place in the view, told to the handler.
+fn cursor_at(
+    this: &Object, state: &WindowState, event: id, modifiers: cocoa::appkit::NSEventModifierFlags,
+) {
     let point: NSPoint = unsafe {
         let point = NSEvent::locationInWindow(event);
 
         msg_send![this, convertPoint:point fromView:nil]
     };
-    let modifiers = unsafe { NSEvent::modifierFlags(event) };
 
     let position = Point { x: point.x, y: point.y };
 

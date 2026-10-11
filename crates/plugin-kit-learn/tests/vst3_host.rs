@@ -8,6 +8,10 @@
 //! change at that call's first sample follows the edit; and an edit made just before
 //! processing stops is kept.
 //!
+//! And a key the host gives the editor's view (`IPlugView::onKeyDown()`, change 15: Cubase keeps
+//! the keyboard from a plug-in's window and gives it its keys this way) reaches the editor, the
+//! host told whether the editor took it (the CA-72's `docs/decisions.md` R-KEYS).
+//!
 //! It is here because this is the kit's one crate on nih-plug, with the VST3 wrapper switched
 //! on for its tests alone. The plug-in is a probe: its editor opens no window but keeps the
 //! context the wrapper gives it, the one a plug-in's editor sets its parameters through, and
@@ -64,6 +68,9 @@ thread_local! {
     static CONTEXT: RefCell<Option<Arc<dyn GuiContext>>> = const { RefCell::new(None) };
     /// The values the probe's processor last saw: SWITCH and LEVEL.
     static SEEN: Cell<Option<(bool, f32)>> = const { Cell::new(None) };
+    /// The keys the host gave the probe's editor's view, and whether its editor takes them.
+    static KEYS: RefCell<Vec<nih_plug::editor::HostKey>> = const { RefCell::new(Vec::new()) };
+    static TAKES_KEYS: Cell<bool> = const { Cell::new(false) };
 }
 
 #[derive(Params)]
@@ -163,6 +170,10 @@ impl Editor for ProbeEditor {
     fn param_value_changed(&self, _id: &str, _normalized_value: f32) {}
     fn param_modulation_changed(&self, _id: &str, _modulation_offset: f32) {}
     fn param_values_changed(&self) {}
+    fn on_host_key(&self, key: nih_plug::editor::HostKey) -> bool {
+        KEYS.with(|k| k.borrow_mut().push(key));
+        TAKES_KEYS.with(Cell::get)
+    }
 }
 
 /// What the host does with the editor's edits.
@@ -557,4 +568,36 @@ fn an_edit_while_not_processing_is_set_at_once() {
     i.click(false);
     assert!(!i.params.switch.value());
     assert_eq!(i.reported("switch"), 0.0);
+}
+
+/// A key the host gives the view (change 15; the CA-72's R-KEYS) reaches the editor with its
+/// character, VST3 code, modifiers and state, down or up; the host is told it was taken only if
+/// the editor took it (else the key is the host's: its key command).
+#[test]
+fn a_key_the_host_gives_the_view_reaches_the_editor() {
+    use nih_plug::editor::HostKey;
+    let i = Instance::new(Host::Cubase);
+    TAKES_KEYS.with(|t| t.set(false));
+    // SAFETY: the view the instance made, on the host's main thread.
+    unsafe { assert_eq!(i.view.on_key_down('8' as i16, 0, 0), kResultFalse) };
+    TAKES_KEYS.with(|t| t.set(true));
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(i.view.on_key_down('8' as i16, 0, 1), kResultOk);
+        assert_eq!(i.view.on_key_up(13, 4, 0), kResultOk);
+    }
+    let key = |character, key_code, modifiers, down| HostKey {
+        character,
+        key_code,
+        modifiers,
+        down,
+    };
+    assert_eq!(
+        KEYS.with(|k| std::mem::take(&mut *k.borrow_mut())),
+        vec![
+            key(Some('8'), 0, 0, true),
+            key(Some('8'), 0, 1, true),
+            key(Some('\r'), 4, 0, false),
+        ]
+    );
 }

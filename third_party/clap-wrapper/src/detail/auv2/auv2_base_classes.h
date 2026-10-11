@@ -605,8 +605,12 @@ class WrapAsAUV2 : public ausdk::AUBase,
   void param_clear(clap_id param, clap_param_clear_flags flags) override
   {
   }
+  // The plugin asks for its own changes (its editor's) to be taken while the host may not be
+  // rendering: done at the next idle on the main thread, unless a block takes them first
+  // (flushEditorParameters()).
   void param_request_flush() override
   {
+    _requestParamFlush = true;
   }
 
   void latency_changed() override;
@@ -780,6 +784,11 @@ class WrapAsAUV2 : public ausdk::AUBase,
   // came: the saved state then has them, and no block is processed meanwhile.
   std::mutex _renderMutex;
   void flushPendingParameters();
+  // At an idle after the plugin asked for a flush (param_request_flush()), when no block is
+  // being rendered: the plugin's own changes, and the host's still waiting, through
+  // clap_plugin_params.flush(), the plugin's changes then told to the host as a block's are.
+  void flushEditorParameters();
+  std::vector<clap_event_param_value_t> eventsFor(const std::vector<PendingParameter> &changes);
 
   // some info about the wrapped clap
   // audio-port layout captured at PostConstructor. Scanning the CLAP
@@ -840,6 +849,7 @@ class WrapAsAUV2 : public ausdk::AUBase,
 #endif
 
   std::atomic_bool _requestUICallback = false;
+  std::atomic_bool _requestParamFlush = false;
 
   // the queue from audiothread to UI thread
   ClapWrapper::detail::shared::fixedqueue<queueEvent, 8192> _queueToUI;

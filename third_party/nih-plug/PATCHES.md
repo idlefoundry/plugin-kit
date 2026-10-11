@@ -155,7 +155,18 @@ Windows 11 (2026-10-07; the CA-72's `docs/decisions.md` R36, its change 12; K4 h
     calls, and nothing is allocated, locked or waited for on the audio thread: a flag, and an
     atomic for each parameter. `crates/plugin-kit-learn/tests/vst3_host.rs` drives the wrapper
     through its factory as Cubase 15 does; four of its six tests fail without this.
+15. **The keys a host gives a VST3 plugin's view reach its editor.** Cubase keeps the keyboard
+    from a plugin's own window and gives the plugin its keys through `IPlugView::onKeyDown()`
+    and `onKeyUp()`, using those the plugin does not take as its own key commands (Escape closes
+    the plugin's window). The wrapper answered `kNotImplemented`, so no key ever reached the
+    editor, and no typed field (a search, a name, a value typed into a readout) worked in
+    Cubase. They are now offered to it (`Editor::on_host_key()`, `HostKey`: VST3's character,
+    `VirtualKeyCodes` code, `KeyModifier` flags, down or up; `src/editor.rs`), and the host is
+    told `kResultTrue` if the editor took the key, else `kResultFalse`
+    (`src/wrapper/vst3/view.rs`). An editor that does not override it takes none, as before.
+    The CA-72's change 13 (its `docs/decisions.md` R-KEYS). `crates/plugin-kit-learn/tests/
+    vst3_host.rs` gives the view keys as Cubase does.
 
 To move to a newer upstream commit, copy its `Cargo.toml`, `LICENSE`, `README.md`, `src`
-and `nih_plug_derive` here and apply the fourteen changes again, unless upstream has fixed them.
+and `nih_plug_derive` here and apply the fifteen changes again, unless upstream has fixed them.
 Then update the commit above, and `nih_plug_xtask`'s `rev` in each plug-in's workspace `Cargo.toml`.

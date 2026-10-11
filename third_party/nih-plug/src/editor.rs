@@ -69,11 +69,34 @@ pub trait Editor: Send {
     /// loaded.
     fn param_values_changed(&self);
 
+    /// A key the host gave the editor's view rather than its window ([`HostKey`]): whether the
+    /// editor took it. The host uses a key the editor does not take for itself (its own key
+    /// commands). By default none is taken.
+    fn on_host_key(&self, key: HostKey) -> bool {
+        let _ = key;
+        false
+    }
+
     // TODO: Reconsider adding a tick function here for the Linux `IRunLoop`. To keep this platform
     //       and API agnostic, add a way to ask the GuiContext if the wrapper already provides a
     //       tick function. If it does not, then the Editor implementation must handle this by
     //       itself. This would also need an associated `PREFERRED_FRAME_RATE` constant.
     // TODO: Host->Plugin resizing
+}
+
+/// A key the host gave the editor's view rather than its window: VST3's `IPlugView::onKeyDown()`
+/// and `onKeyUp()`. Cubase keeps the keyboard from a plugin's own window and gives it the keys
+/// this way, using those the plugin does not take as its own key commands. The values are
+/// VST3's: `character` the key's character (none for a key without one), `key_code` one of its
+/// `VirtualKeyCodes` (0 for none: `KEY_BACK` is 1, `KEY_RETURN` 4, `KEY_ESCAPE` 6 and so on),
+/// `modifiers` its `KeyModifier` flags (shift 1, alt 2, command 4: Ctrl on Windows, control 8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostKey {
+    pub character: Option<char>,
+    pub key_code: i16,
+    pub modifiers: i16,
+    /// Pressed, else let go.
+    pub down: bool,
 }
 
 /// A raw window handle for platform and GUI framework agnostic editors. This implements

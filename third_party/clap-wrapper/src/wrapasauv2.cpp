@@ -624,30 +624,7 @@ void WrapAsAUV2::flushPendingParameters()
     changes.swap(_pendingParameters);
     _pendingParameters.reserve(changes.capacity());
   }
-  std::vector<clap_event_param_value_t> events;
-  {
-    std::lock_guard<std::mutex> guard(_paramTreeMutex);
-    for (const auto &c : changes)
-    {
-      auto p = _parametertree.find(c.id);
-      if (p == _parametertree.end()) continue;
-      const auto &info = p->second->info();
-      clap_event_param_value_t e{};
-      e.header.size = sizeof(e);
-      e.header.time = 0;
-      e.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
-      e.header.type = CLAP_EVENT_PARAM_VALUE;
-      e.header.flags = 0;
-      e.param_id = info.id;
-      e.cookie = info.cookie;
-      e.note_id = -1;
-      e.port_index = -1;
-      e.channel = -1;
-      e.key = -1;
-      e.value = c.value;
-      events.push_back(e);
-    }
-  }
+  auto events = eventsFor(changes);
   if (events.empty()) return;
   clap_input_events_t in{&events,
                          [](const clap_input_events_t *list) -> uint32_t
@@ -660,6 +637,101 @@ void WrapAsAUV2::flushPendingParameters()
   // No output list: nih-plug then leaves the editor's own changes queued for the next
   // block, where they reach the host as before.
   params->flush(_plugin->_plugin, &in, nullptr);
+}
+
+std::vector<clap_event_param_value_t> WrapAsAUV2::eventsFor(const std::vector<PendingParameter> &changes)
+{
+  std::vector<clap_event_param_value_t> events;
+  std::lock_guard<std::mutex> guard(_paramTreeMutex);
+  for (const auto &c : changes)
+  {
+    auto p = _parametertree.find(c.id);
+    if (p == _parametertree.end()) continue;
+    const auto &info = p->second->info();
+    clap_event_param_value_t e{};
+    e.header.size = sizeof(e);
+    e.header.time = 0;
+    e.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+    e.header.type = CLAP_EVENT_PARAM_VALUE;
+    e.header.flags = 0;
+    e.param_id = info.id;
+    e.cookie = info.cookie;
+    e.note_id = -1;
+    e.port_index = -1;
+    e.channel = -1;
+    e.key = -1;
+    e.value = c.value;
+    events.push_back(e);
+  }
+  return events;
+}
+
+void WrapAsAUV2::flushEditorParameters()
+{
+  auto *params = _plugin ? _plugin->_ext._params : nullptr;
+  if (!params) return;
+  // A block being rendered takes the plugin's changes itself (as its output events), and
+  // the host's; only when none is are they flushed here. Never waiting on the audio thread.
+  std::unique_lock<std::mutex> render(_renderMutex, std::try_to_lock);
+  if (!render.owns_lock()) return;
+  std::vector<PendingParameter> changes;
+  {
+    std::lock_guard<std::mutex> guard(_pendingParametersMutex);
+    changes.swap(_pendingParameters);
+    _pendingParameters.reserve(changes.capacity());
+  }
+  auto events = eventsFor(changes);
+  clap_input_events_t in{&events,
+                         [](const clap_input_events_t *list) -> uint32_t
+                         { return (uint32_t)static_cast<std::vector<clap_event_param_value_t> *>(list->ctx)->size(); },
+                         [](const clap_input_events_t *list, uint32_t index) -> const clap_event_header_t *
+                         {
+                           auto *v = static_cast<std::vector<clap_event_param_value_t> *>(list->ctx);
+                           return index < v->size() ? &(*v)[index].header : nullptr;
+                         }};
+  // The plugin's own: its edits' values and gestures, kept to be told to the host once the
+  // plugin is done (each as a value event, the gestures' parameter in param_id).
+  std::vector<clap_event_param_value_t> told;
+  clap_output_events_t out{&told,
+                           [](const clap_output_events_t *list, const clap_event_header_t *event) -> bool
+                           {
+                             auto *v = static_cast<std::vector<clap_event_param_value_t> *>(list->ctx);
+                             clap_event_param_value_t e{};
+                             if (event->space_id != CLAP_CORE_EVENT_SPACE_ID) return true;
+                             if (event->type == CLAP_EVENT_PARAM_VALUE)
+                             {
+                               e = *reinterpret_cast<const clap_event_param_value_t *>(event);
+                             }
+                             else if (event->type == CLAP_EVENT_PARAM_GESTURE_BEGIN ||
+                                      event->type == CLAP_EVENT_PARAM_GESTURE_END)
+                             {
+                               e.header = *event;
+                               e.param_id = reinterpret_cast<const clap_event_param_gesture_t *>(event)->param_id;
+                             }
+                             else
+                             {
+                               return true;
+                             }
+                             v->push_back(e);
+                             return true;
+                           }};
+  params->flush(_plugin->_plugin, &in, &out);
+  render.unlock();
+  for (const auto &e : told)
+  {
+    switch (e.header.type)
+    {
+      case CLAP_EVENT_PARAM_GESTURE_BEGIN:
+        onBeginEdit(e.param_id);
+        break;
+      case CLAP_EVENT_PARAM_VALUE:
+        onPerformEdit(&e);
+        break;
+      case CLAP_EVENT_PARAM_GESTURE_END:
+        onEndEdit(e.param_id);
+        break;
+    }
+  }
 }
 
 void WrapAsAUV2::SetBypassEffect(bool bypass)
@@ -1428,6 +1500,13 @@ void WrapAsAUV2::onIdle()
       }
       break;
     }
+  }
+
+  // The plugin's own changes, when it asked and the host is not rendering (change 5).
+  if (_requestParamFlush.exchange(false))
+  {
+    auto guarantee_mainthread = _plugin->AlwaysMainThread();
+    flushEditorParameters();
   }
 
   if (_requestUICallback)

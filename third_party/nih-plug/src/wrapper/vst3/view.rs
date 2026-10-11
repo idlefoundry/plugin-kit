@@ -12,6 +12,7 @@ use vst3_sys::VST3;
 
 use super::inner::{Task, WrapperInner};
 use super::util::{ObjectPtr, VstPtr};
+use crate::editor::HostKey;
 use crate::plugin::vst3::Vst3Plugin;
 use crate::prelude::{Editor, ParentWindowHandle};
 
@@ -99,6 +100,29 @@ struct RunLoopEventHandler<P: Vst3Plugin> {
 }
 
 impl<P: Vst3Plugin> WrapperView<P> {
+    /// A key the host gave the view, offered to the editor: `kResultOk` (VST3's `kResultTrue`) if it
+    /// took it.
+    fn host_key(
+        &self,
+        key: vst3_sys::base::char16,
+        key_code: i16,
+        modifiers: i16,
+        down: bool,
+    ) -> tresult {
+        let character = char::from_u32(u32::from(key as u16)).filter(|c| *c != '\0');
+        let taken = self.editor.lock().on_host_key(HostKey {
+            character,
+            key_code,
+            modifiers,
+            down,
+        });
+        if taken {
+            kResultOk
+        } else {
+            kResultFalse
+        }
+    }
+
     pub fn new(inner: Arc<WrapperInner<P>>, editor: Arc<Mutex<Box<dyn Editor>>>) -> Box<Self> {
         Self::allocate(
             inner,
@@ -333,22 +357,24 @@ impl<P: Vst3Plugin> IPlugView for WrapperView<P> {
         kNotImplemented
     }
 
+    // Keys the host gives the view rather than the editor's window (Cubase keeps the keyboard
+    // from it): the editor's if it takes them, else the host's (`Editor::on_host_key()`).
     unsafe fn on_key_down(
         &self,
-        _key: vst3_sys::base::char16,
-        _key_code: i16,
-        _modifiers: i16,
+        key: vst3_sys::base::char16,
+        key_code: i16,
+        modifiers: i16,
     ) -> tresult {
-        kNotImplemented
+        self.host_key(key, key_code, modifiers, true)
     }
 
     unsafe fn on_key_up(
         &self,
-        _key: vst3_sys::base::char16,
-        _key_code: i16,
-        _modifiers: i16,
+        key: vst3_sys::base::char16,
+        key_code: i16,
+        modifiers: i16,
     ) -> tresult {
-        kNotImplemented
+        self.host_key(key, key_code, modifiers, false)
     }
 
     unsafe fn get_size(&self, size: *mut ViewRect) -> tresult {

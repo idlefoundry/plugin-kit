@@ -155,9 +155,6 @@ pub fn pair_gains(spread: f64, inner: f64, out: f64) -> [(f32, f32); 2] {
     [pan_gains(0.5 + 0.5 * at), pan_gains(0.5 - 0.5 * at)]
 }
 
-/// The detune between DOUBLE's two voices of a note at its full amount, cents (the CA-74's R28).
-pub const DOUBLE_CENTS: f64 = 20.0;
-
 /// DOUBLE's trim on the output: a note's two voices, each its own, add in power, so it is
 /// turned down by two's square root and sounds about as loud as one voice a note (R28).
 pub const DOUBLE_TRIM: f64 = std::f64::consts::FRAC_1_SQRT_2;

@@ -21,7 +21,8 @@ from this directory) was
 pluginval (strictness 10) aborted the host in about one run in four, in its parameter
 thread-safety test, with the heap corrupted, and failed its state restoration test in about
 one in eight. Four changes, in `src/wrapasauv2.cpp` and
-`src/detail/auv2/auv2_base_classes.h`, fix these and the parameters' order:
+`src/detail/auv2/auv2_base_classes.h`, fix these and the parameters' order (a fifth, below,
+takes the plugin's own changes when the host is not rendering):
 
 1. **Parameter changes from any thread.** `SetParameter()` added the host's change to the
    process adapter's event list at once. A host calls it from any thread: its main thread
@@ -60,6 +61,26 @@ one in eight. Four changes, in `src/wrapasauv2.cpp` and
    parameters' string ids, so the hosts' lists (Logic's and GarageBand's controls, the
    automation menus) were in no order. It now gives the order `setupParameters()` lists
    them in, the plugin's (the CA-72's, the panel's), under the lock that guards that list.
+
+One more, from the CA-72's trial in GarageBand 10.4.14 on macOS 27 (2026-10-11; its
+`docs/decisions.md` R-MAC):
+
+5. **The plugin's own changes are taken when the host is not rendering.** A plugin asks for a
+   flush (`clap_host_params.request_flush()`) when its editor changes a parameter, so that the
+   change is taken even while the host renders no blocks; the wrapper's `param_request_flush()`
+   was empty. nih-plug (`third_party/nih-plug`) holds an editor's change until a block or a
+   flush writes it out, so in a host that was not rendering the instrument (GarageBand with
+   its transport stopped, as Logic does for a track not selected) a click on the CA-72's
+   switches, a drag of a knob or a value typed into a readout changed nothing until playback
+   began, when they all arrived at once. Now the request is noted, and at the next idle on the
+   main thread (the editor's view's timer, every 50 ms, while it is open) the wrapper takes
+   the render lock without waiting for it and, holding it, calls `clap_plugin_params.flush()`
+   with the host's changes still waiting (as change 2 does) and an output list; the plugin's
+   values and gestures from it are then told to the host as a block's are (`onBeginEdit()`,
+   `onPerformEdit()`, `onEndEdit()`), after the lock is let go (`flushEditorParameters()`). If
+   a block is being rendered, nothing is done: the block writes the changes out itself.
+   Tried in GarageBand, stopped: NOTE PRIORITY, RETRIGGER, POLY, a drag of VOICES and DRIVE
+   typed as 8.4 each took at once (none did before).
 
 To update: copy the same paths from a newer tag (and the SDKs at the versions it then
 fetches), apply these changes again if upstream has not made its own, build the component

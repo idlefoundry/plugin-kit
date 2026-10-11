@@ -371,3 +371,47 @@ plug-ins now draw, and the stereo constant the CA-74 stopped using: "Yup, tidy t
 **Evidence (the Linux reference machine, 2026-10-11):** the kit's tests and Clippy with
 warnings denied pass. The macOS fixes are the CA-72's, tried there in Bitwig and GarageBand;
 the CA-74's build on this branch is tried on the Mac.
+
+## K9. The CA-72's last editor fixes: softbuffer's tiles on macOS, baseview's press on Windows
+
+**The owner, 2026-10-11,** of what the kit still lacked once the CA-72 was published (its
+records R44 to R60): "get codex agents to do this"; then "merge anything into main that should
+be merged. Just don't push anything public", and, for the workers, "You can run that launch
+script".
+
+**Agent decisions, 2026-10-11** (the CA-72's lead; two Codex workers, each reviewed), on branches
+from `mac-fixes` (5cf2b39), merged after it (K8), in the order agreed with the CA-74's lead:
+- **softbuffer change 2** (the CA-72's R59 and R60; `third_party/softbuffer/PATCHES.md`). On
+  macOS the buffer is kept from frame to frame (`age` 1 once presented, as on Windows and X11)
+  and shown through tiles of 256 pixels. A present gives new images only to the tiles its damage
+  touches. The layer is flipped only where the layers above it leave the coordinates running up
+  (`top_down`); without that, a flipped view (baseview's, so every editor's) showed the tiles
+  in rows bottom to top. The code is the CA-72's, comments aside. An editor that presents only
+  what changed (the CA-72's R58) now does so on macOS too; one that presents the whole frame is
+  shown as before. A plug-in taking it should check the editor in a Mac host, settled against a
+  whole repaint.
+- **baseview change 5** (the CA-72's R60; `third_party/baseview/PATCHES.md`). On Windows a
+  button's message gives the handler a `CursorMoved` at its own place before the press or
+  release, as change 4 does on macOS, so a click with no move before it (Cubase 15) lands where
+  it is. The worker's independent review found that the count of held buttons was read before
+  that call and written after it, so a press or release let through by a modal loop run from the
+  handler would be lost. It is now read after the call, in the kit and in the CA-72 alike, so the
+  two copies stay the same.
+- The tests stay in the plug-ins (K3): each change is proved with the CA-72's own tests, in an
+  export of its main with the kit's copy put over its own.
+
+**Evidence (2026-10-11):**
+- **The Mac** (macOS 27.0, Rust 1.97.1, over SSH, nothing on its screen). The CA-72's
+  `softbuffer_copies` passes with the kit's softbuffer, in a view of AppKit's own and in a
+  flipped one. Without `top_down` it fails in the flipped view (180000 pixels wrong). With
+  every tile given a new image, it fails at the one-pixel change. Restored, it passes again.
+  Clippy over the CA-72's workspace with every feature and `-D warnings` passes. A present of
+  the whole window took 1.43 ms, a usual frame's 0.10 ms.
+- **Windows** (MSVC 1.97.1). The CA-72's seven window tests (`windows_window_tests`) pass in the
+  desktop session with the kit's baseview, the counter's read moved included. Its
+  `a_press_with_no_move_before_it_lands_where_it_is` fails with the kit's previous `window.rs`
+  ("POLY's tab not chosen") and passes once it is restored. Clippy over the CA-72's workspace
+  with every feature and `-D warnings` passes, and the kit's copy of baseview is the CA-72's,
+  file for file.
+- **Linux:** the kit's fmt, Clippy with warnings denied and tests (71 passed) pass on each
+  branch.

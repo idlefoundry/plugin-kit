@@ -21,8 +21,8 @@ move onto it one at a time; until one has, it keeps its own copies.
 | `crates/plugin-kit-materials` | The worn skins' materials: pictures placed and resampled at a scale, a display's glass, a lit button's light on the surface round it and its translucent cap lit from inside, dots filled as one shape, a dot-matrix display's lettering (K5) |
 | `crates/plugin-kit-stereo` | The stereo and DRIVE's AUTO GAIN: a constant-power pan law, where SCATTER places the voices (EVEN, CENTER) and DOUBLE its pairs, INNER's band on either side (K7), the places' glide and the trims of voices summed; AUTO GAIN's curve measured off the audio thread for each sound, K-weighted, read by the audio thread without a lock and saved with the session (K6) |
 | `third_party/nih-plug` | The plug-in framework, at upstream's commit with fifteen changes (`PATCHES.md`) |
-| `third_party/baseview` | The editor's windows, with three changes for Windows hosts (`PATCHES.md`) |
-| `third_party/softbuffer` | The editor's pixels, at the 0.4.8 release with one change for macOS hosts that load several plug-ins into one process (`PATCHES.md`) |
+| `third_party/baseview` | The editor's windows, with four changes for Windows hosts and one for macOS (`PATCHES.md`) |
+| `third_party/softbuffer` | The editor's pixels, at the 0.4.8 release with two changes for macOS: for hosts that load several plug-ins into one process, and the frame kept and shown in tiles, only where it changed (`PATCHES.md`) |
 | `third_party/clap-wrapper`, `clap`, `AudioUnitSDK` | The Audio Unit, built from a plug-in's CLAP (`clap-wrapper/PATCHES.md`, `VENDORED.md`) |
 
 ## Using it

@@ -19,7 +19,7 @@ A plug-in takes this copy in place of crates.io's through its workspace's
 took before.
 
 Two changes, for macOS only, in `src/backends/cg.rs` (the first in `docs/decisions.md` K3;
-found and made for the CA-72, its `docs/decisions.md` R35, R59 and R60):
+found and made for the CA-72, its `docs/decisions.md` R41, R59 and R60):
 
 1. **Each copy of softbuffer registers an observer class of its own.** The CoreGraphics
    backend keeps its layer in step with the view's through an Objective-C object observing the

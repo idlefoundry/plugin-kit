@@ -1,29 +1,28 @@
 //! Softbuffer implementation using CoreGraphics.
 use crate::backend_interface::*;
 use crate::error::InitError;
-use crate::{util, Rect, SoftBufferError};
+use crate::{Rect, SoftBufferError};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel};
-use objc2::{msg_send, sel, ClassType, MainThreadMarker};
-use objc2_core_foundation::{CFRetained, CGPoint};
+use objc2::{ClassType, MainThreadMarker, msg_send, sel};
+use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{
     CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage, CGImageAlphaInfo,
     CGImageByteOrderInfo, CGImageComponentInfo, CGImagePixelFormatInfo,
 };
 use objc2_foundation::{
-    ns_string, NSDictionary, NSKeyValueChangeKey, NSKeyValueChangeNewKey,
-    NSKeyValueObservingOptions, NSNumber, NSObject, NSObjectNSKeyValueObserverRegistration,
-    NSString, NSValue,
+    NSDictionary, NSKeyValueChangeKey, NSKeyValueChangeNewKey, NSKeyValueObservingOptions,
+    NSNumber, NSObject, NSObjectNSKeyValueObserverRegistration, NSString, NSValue, ns_string,
 };
-use objc2_quartz_core::{kCAGravityTopLeft, CALayer, CATransaction};
+use objc2_quartz_core::{CALayer, CATransaction, kCAGravityTopLeft};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawWindowHandle};
 
-use std::ffi::{c_void, CString};
+use std::ffi::{CString, c_void};
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::num::NonZeroU32;
 use std::ops::Deref;
-use std::ptr::{self, slice_from_raw_parts_mut, NonNull};
+use std::ptr::{self, NonNull, slice_from_raw_parts_mut};
 use std::sync::OnceLock;
 
 /// The class of our observers, this copy of softbuffer's own.
@@ -148,8 +147,30 @@ pub struct CGImpl<D, W> {
     width: usize,
     /// The height of the underlying buffer.
     height: usize,
+    /// The buffer, kept from frame to frame (patched, `PATCHES.md`): upstream made a new one,
+    /// zeroed, at every `buffer_mut`.
+    pixels: Vec<u32>,
+    /// Whether `pixels` holds the frame last presented, every pixel of it: `age` 1.
+    presented: bool,
+    /// Our layer's tiles: sublayers each showing [`TILE`] by [`TILE`] pixels of the buffer
+    /// (fewer at its right and bottom edges), so that a present with damage hands Core
+    /// Animation new images of the tiles it touches alone (patched, `PATCHES.md`). Made for
+    /// the buffer's size and the layer's scale factor, `tiled`.
+    tiles: Vec<Tile>,
+    tiled: (usize, usize, f64),
     window_handle: W,
     _display: PhantomData<D>,
+}
+
+/// A tile's side in pixels: whole points at a scale factor of 1 or 2, so that tiles meet
+/// without a seam.
+const TILE: usize = 256;
+
+/// A tile: its layer, and the pixels of the buffer it shows (left, top, width, height).
+#[derive(Debug)]
+struct Tile {
+    layer: SendCALayer,
+    rect: (usize, usize, usize, usize),
 }
 
 impl<D, W> Drop for CGImpl<D, W> {
@@ -286,6 +307,10 @@ impl<D: HasDisplayHandle, W: HasWindowHandle> SurfaceInterface<D, W> for CGImpl<
             color_space,
             width,
             height,
+            pixels: Vec::new(),
+            presented: false,
+            tiles: Vec::new(),
+            tiled: (0, 0, 0.0),
             _display: PhantomData,
             window_handle: window_src,
         })
@@ -297,49 +322,84 @@ impl<D: HasDisplayHandle, W: HasWindowHandle> SurfaceInterface<D, W> for CGImpl<
     }
 
     fn resize(&mut self, width: NonZeroU32, height: NonZeroU32) -> Result<(), SoftBufferError> {
-        self.width = width.get() as usize;
-        self.height = height.get() as usize;
+        let (width, height) = (width.get() as usize, height.get() as usize);
+        if (width, height) != (self.width, self.height) {
+            self.presented = false;
+        }
+        self.width = width;
+        self.height = height;
         Ok(())
     }
 
     fn buffer_mut(&mut self) -> Result<BufferImpl<'_, D, W>, SoftBufferError> {
-        Ok(BufferImpl {
-            buffer: util::PixelBuffer(vec![0; self.width * self.height]),
-            imp: self,
-        })
+        let n = self.width * self.height;
+        if self.pixels.len() != n {
+            self.pixels = vec![0; n];
+            self.presented = false;
+        }
+        Ok(BufferImpl { imp: self })
     }
 }
 
-#[derive(Debug)]
-pub struct BufferImpl<'a, D, W> {
-    imp: &'a mut CGImpl<D, W>,
-    buffer: util::PixelBuffer,
-}
-
-impl<D: HasDisplayHandle, W: HasWindowHandle> BufferInterface for BufferImpl<'_, D, W> {
-    fn width(&self) -> NonZeroU32 {
-        NonZeroU32::new(self.imp.width as u32).unwrap()
+impl<D, W> CGImpl<D, W> {
+    /// Our layer's sublayers laid out from its top down, whatever the layers over it: Core
+    /// Animation flips the coordinates of a layer's sublayers once for each flipped layer from
+    /// the window's root (whose coordinates run up) down to that layer. Upstream flipped our
+    /// layer always, right in a view of AppKit's own; but a flipped view's layer is flipped too
+    /// (baseview's is: a plug-in editor's), and there the two flips undid each other, so that
+    /// the tiles came out in rows bottom to top. So our layer is flipped only where the layers
+    /// over it leave the coordinates running up (patched, `PATCHES.md`).
+    fn top_down(&self) {
+        let mut down = false;
+        let mut over = self.layer.superlayer();
+        while let Some(layer) = over {
+            down ^= layer.isGeometryFlipped();
+            over = layer.superlayer();
+        }
+        if self.layer.isGeometryFlipped() == down {
+            self.layer.setGeometryFlipped(!down);
+        }
     }
 
-    fn height(&self) -> NonZeroU32 {
-        NonZeroU32::new(self.imp.height as u32).unwrap()
+    /// The tiles made again if the buffer's size or the layer's scale factor changed since they
+    /// were made: whether they were (so that every tile needs its image).
+    fn tile(&mut self) -> bool {
+        let scale = self.layer.contentsScale();
+        let want = (self.width, self.height, scale);
+        if self.tiled == want && !self.tiles.is_empty() {
+            return false;
+        }
+        for tile in self.tiles.drain(..) {
+            tile.layer.removeFromSuperlayer();
+        }
+        // (Tiles past the layer's bounds, while the buffer is larger than the view, are not
+        // shown, as an image larger than the layer was not.)
+        self.layer.setMasksToBounds(true);
+        for y in (0..self.height).step_by(TILE) {
+            for x in (0..self.width).step_by(TILE) {
+                let rect = (x, y, TILE.min(self.width - x), TILE.min(self.height - y));
+                let layer = CALayer::new();
+                layer.setAnchorPoint(CGPoint::new(0.0, 0.0));
+                layer.setContentsScale(scale);
+                layer.setContentsGravity(unsafe { kCAGravityTopLeft });
+                layer.setFrame(CGRect::new(
+                    CGPoint::new(rect.0 as f64 / scale, rect.1 as f64 / scale),
+                    CGSize::new(rect.2 as f64 / scale, rect.3 as f64 / scale),
+                ));
+                self.layer.addSublayer(&layer);
+                self.tiles.push(Tile {
+                    layer: SendCALayer(layer),
+                    rect,
+                });
+            }
+        }
+        self.tiled = want;
+        true
     }
 
-    #[inline]
-    fn pixels(&self) -> &[u32] {
-        &self.buffer
-    }
-
-    #[inline]
-    fn pixels_mut(&mut self) -> &mut [u32] {
-        &mut self.buffer
-    }
-
-    fn age(&self) -> u8 {
-        0
-    }
-
-    fn present(self) -> Result<(), SoftBufferError> {
+    /// An image of the buffer's pixels in `rect` (left, top, width, height): a copy of them,
+    /// which Core Animation may read after the buffer has changed again.
+    fn image(&self, (x, y, w, h): (usize, usize, usize, usize)) -> Option<CFRetained<CGImage>> {
         unsafe extern "C-unwind" fn release(
             _info: *mut c_void,
             data: NonNull<c_void>,
@@ -351,17 +411,20 @@ impl<D: HasDisplayHandle, W: HasWindowHandle> BufferInterface for BufferImpl<'_,
             drop(unsafe { Box::from_raw(slice) })
         }
 
+        let mut copy = Vec::with_capacity(w * h);
+        for row in y..y + h {
+            let at = row * self.width + x;
+            copy.extend_from_slice(&self.pixels[at..at + w]);
+        }
         let data_provider = {
-            let len = self.buffer.len() * size_of::<u32>();
-            let buffer: *mut [u32] = Box::into_raw(self.buffer.0.into_boxed_slice());
+            let len = copy.len() * size_of::<u32>();
+            let buffer: *mut [u32] = Box::into_raw(copy.into_boxed_slice());
             // Convert slice pointer to thin pointer.
             let data_ptr = buffer.cast::<c_void>();
 
             // SAFETY: The data pointer and length are valid.
             // The info pointer can safely be NULL, we don't use it in the `release` callback.
-            unsafe {
-                CGDataProvider::with_data(ptr::null_mut(), data_ptr, len, Some(release)).unwrap()
-            }
+            unsafe { CGDataProvider::with_data(ptr::null_mut(), data_ptr, len, Some(release)) }?
         };
 
         // `CGBitmapInfo` consists of a combination of `CGImageAlphaInfo`, `CGImageComponentInfo`
@@ -375,14 +438,14 @@ impl<D: HasDisplayHandle, W: HasWindowHandle> BufferInterface for BufferImpl<'_,
                 | CGImagePixelFormatInfo::Packed.0,
         );
 
-        let image = unsafe {
+        unsafe {
             CGImage::new(
-                self.imp.width,
-                self.imp.height,
+                w,
+                h,
                 8,
                 32,
-                self.imp.width * 4,
-                Some(&self.imp.color_space),
+                w * 4,
+                Some(&self.color_space),
                 bitmap_info,
                 Some(&data_provider),
                 ptr::null(),
@@ -390,23 +453,83 @@ impl<D: HasDisplayHandle, W: HasWindowHandle> BufferInterface for BufferImpl<'_,
                 CGColorRenderingIntent::RenderingIntentDefault,
             )
         }
-        .unwrap();
+    }
+}
 
-        // The CALayer has a default action associated with a change in the layer contents, causing
-        // a quarter second fade transition to happen every time a new buffer is applied. This can
-        // be avoided by wrapping the operation in a transaction and disabling all actions.
-        CATransaction::begin();
-        CATransaction::setDisableActions(true);
+#[derive(Debug)]
+pub struct BufferImpl<'a, D, W> {
+    imp: &'a mut CGImpl<D, W>,
+}
 
-        // SAFETY: The contents is `CGImage`, which is a valid class for `contents`.
-        unsafe { self.imp.layer.setContents(Some(image.as_ref())) };
-
-        CATransaction::commit();
-        Ok(())
+impl<D: HasDisplayHandle, W: HasWindowHandle> BufferInterface for BufferImpl<'_, D, W> {
+    fn width(&self) -> NonZeroU32 {
+        NonZeroU32::new(self.imp.width as u32).unwrap()
     }
 
-    fn present_with_damage(self, _damage: &[Rect]) -> Result<(), SoftBufferError> {
-        self.present()
+    fn height(&self) -> NonZeroU32 {
+        NonZeroU32::new(self.imp.height as u32).unwrap()
+    }
+
+    #[inline]
+    fn pixels(&self) -> &[u32] {
+        &self.imp.pixels
+    }
+
+    #[inline]
+    fn pixels_mut(&mut self) -> &mut [u32] {
+        &mut self.imp.pixels
+    }
+
+    fn age(&self) -> u8 {
+        u8::from(self.imp.presented)
+    }
+
+    fn present(self) -> Result<(), SoftBufferError> {
+        let (width, height) = (self.imp.width as u32, self.imp.height as u32);
+        let (Some(width), Some(height)) = (NonZeroU32::new(width), NonZeroU32::new(height)) else {
+            return Ok(());
+        };
+        let whole = Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        };
+        self.present_with_damage(&[whole])
+    }
+
+    /// Each tile that `damage` touches given a new image of its pixels (every tile when the
+    /// tiles have just been made), in one transaction (patched, `PATCHES.md`: upstream gave the
+    /// layer one image of the whole buffer at each present, damage or not).
+    fn present_with_damage(self, damage: &[Rect]) -> Result<(), SoftBufferError> {
+        let imp = self.imp;
+        // The CALayer has a default action associated with a change in the layer contents, causing
+        // a quarter second fade transition to happen every time a new buffer is applied. This can
+        // be avoided by wrapping the operation in a transaction and disabling all actions (the
+        // tiles made, and our layer flipped, in it as well).
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
+        imp.top_down();
+        let all = imp.tile();
+        let meets = |(x, y, w, h): (usize, usize, usize, usize)| {
+            all || damage.iter().any(|d| {
+                let (dx, dy) = (d.x as usize, d.y as usize);
+                let (dw, dh) = (d.width.get() as usize, d.height.get() as usize);
+                dx < x + w && x < dx + dw && dy < y + h && y < dy + dh
+            })
+        };
+        for tile in &imp.tiles {
+            if !meets(tile.rect) {
+                continue;
+            }
+            if let Some(image) = imp.image(tile.rect) {
+                // SAFETY: The contents is `CGImage`, which is a valid class for `contents`.
+                unsafe { tile.layer.setContents(Some(image.as_ref())) };
+            }
+        }
+        CATransaction::commit();
+        imp.presented = true;
+        Ok(())
     }
 }
 

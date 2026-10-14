@@ -36,6 +36,71 @@ pub struct Devices {
     pub midi_inputs: Vec<String>,
 }
 
+/// MIDI errors keep the last valid MIDI inventory while healthy audio discovery
+/// remains available. This is never constructed or read by an audio callback.
+pub(crate) struct Enumeration {
+    pub devices: Devices,
+    pub midi_error: Option<String>,
+}
+
+/// A successful MIDI client lives until the owning control thread shuts down.
+pub(crate) struct MidiDiscovery<C = midir::MidiInput> {
+    client: Option<C>,
+}
+
+impl<C> Default for MidiDiscovery<C> {
+    fn default() -> Self {
+        Self { client: None }
+    }
+}
+
+impl<C> MidiDiscovery<C> {
+    fn poll_with(
+        &mut self,
+        initialize: impl FnOnce() -> Result<C, String>,
+        read: impl FnOnce(&C) -> Result<Vec<String>, String>,
+    ) -> Result<Vec<String>, String> {
+        if self.client.is_none() {
+            self.client = Some(initialize()?);
+        }
+        read(self.client.as_ref().expect("initialized MIDI discovery"))
+    }
+}
+
+impl MidiDiscovery {
+    fn poll(&mut self, app_id: &str) -> Result<Vec<String>, String> {
+        self.poll_with(
+            || midir::MidiInput::new(app_id).map_err(|e| format!("Could not initialize MIDI: {e}")),
+            |input| {
+                let before = input.port_count();
+                let ports = input.ports();
+                let after = input.port_count();
+                midi_names(before, &ports, after, |port| {
+                    input.port_name(port).map_err(|e| e.to_string())
+                })
+            },
+        )
+    }
+}
+
+fn midi_names<P>(
+    before: usize,
+    ports: &[P],
+    after: usize,
+    mut name: impl FnMut(&P) -> Result<String, String>,
+) -> Result<Vec<String>, String> {
+    if before != after || ports.len() != before {
+        return Err("The MIDI port inventory changed during discovery.".into());
+    }
+    ports
+        .iter()
+        .enumerate()
+        .map(|(index, port)| {
+            name(port).map_err(|e| format!("Could not read MIDI input {}: {e}", index + 1))
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Negotiated {
     pub config: Config,
@@ -205,7 +270,11 @@ pub(crate) fn describe(device: &cpal::Device) -> Result<DeviceInfo, String> {
     })
 }
 
-pub(crate) fn enumerate(host: &cpal::Host, app_id: &str) -> Result<Devices, String> {
+pub(crate) fn enumerate(
+    host: &cpal::Host,
+    app_id: &str,
+    midi: &mut MidiDiscovery,
+) -> Result<Enumeration, String> {
     let mut audio = Vec::new();
     for device in host.devices().map_err(|e| e.to_string())? {
         if let Ok(info) = describe(&device) {
@@ -221,27 +290,101 @@ pub(crate) fn enumerate(host: &cpal::Host, app_id: &str) -> Result<Devices, Stri
         .and_then(|d| d.default_output_config().ok())
         .map(|c| c.sample_rate().0)
         .unwrap_or(48000);
-    let midi_inputs = midir::MidiInput::new(app_id)
-        .map(|input| {
-            input
-                .ports()
-                .iter()
-                .filter_map(|port| input.port_name(port).ok())
-                .collect()
-        })
-        .unwrap_or_default();
-    Ok(Devices {
-        backend: format!("{:?}", host.id()),
-        audio,
-        default_output,
-        default_sample_rate,
-        midi_inputs,
+    let (midi_inputs, midi_error) = match midi.poll(app_id) {
+        Ok(names) => (names, None),
+        Err(error) => (Vec::new(), Some(error)),
+    };
+    Ok(Enumeration {
+        devices: Devices {
+            backend: format!("{:?}", host.id()),
+            audio,
+            default_output,
+            default_sample_rate,
+            midi_inputs,
+        },
+        midi_error,
     })
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn midi_discovery_reuses_a_successful_client_and_retries_initialization_errors() {
+        use std::cell::Cell;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Client(Arc<AtomicUsize>);
+        impl Drop for Client {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let initialized = Cell::new(0);
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let mut discovery = MidiDiscovery::<Client>::default();
+        assert!(
+            discovery
+                .poll_with(|| Err("initialization failed".into()), |_| unreachable!())
+                .is_err()
+        );
+        assert!(discovery.client.is_none());
+        assert!(
+            discovery
+                .poll_with(
+                    || {
+                        initialized.set(initialized.get() + 1);
+                        Ok(Client(Arc::clone(&dropped)))
+                    },
+                    |_| Err("port name failed".into())
+                )
+                .is_err()
+        );
+        for _ in 0..100 {
+            assert_eq!(
+                discovery
+                    .poll_with(
+                        || panic!("successful client must not be recreated"),
+                        |_| Ok(vec!["Keys".into()]),
+                    )
+                    .expect("recovered inventory"),
+                ["Keys"]
+            );
+        }
+        assert_eq!(initialized.get(), 1);
+        assert_eq!(dropped.load(Ordering::SeqCst), 0);
+        drop(discovery);
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn midi_names_reject_partial_or_unstable_results_but_accept_a_real_empty_list() {
+        let ports = ["First", "Second"];
+        let error = midi_names(2, &ports, 2, |name| {
+            if *name == "Second" {
+                Err("name query failed".into())
+            } else {
+                Ok((*name).into())
+            }
+        })
+        .expect_err("one failed name invalidates the entire result");
+        assert!(error.contains("input 2") && error.contains("name query failed"));
+        assert!(midi_names(2, &ports, 0, |name| Ok((*name).into())).is_err());
+        assert!(midi_names(2, &ports[..1], 2, |name| Ok((*name).into())).is_err());
+        assert_eq!(
+            midi_names(2, &ports, 2, |name| Ok((*name).into())).expect("stable inventory"),
+            ports
+        );
+        let none: [&str; 0] = [];
+        assert!(
+            midi_names(0, &none, 0, |name| Ok((*name).into()))
+                .expect("real unplug")
+                .is_empty()
+        );
+    }
+
     pub(crate) fn inventory(channels: u16) -> Devices {
         let id = DeviceId {
             name: "Test duplex".into(),

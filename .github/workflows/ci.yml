@@ -48,14 +48,14 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo fmt --all -- --check
 
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: ngspice's libraries
+      - name: Audio and ngspice libraries
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libreadline-dev bison flex
+          sudo apt-get install -y libasound2-dev libreadline-dev bison flex
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: ngspice 47, cached
         if: runner.os == 'Linux'

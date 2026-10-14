@@ -211,7 +211,7 @@ impl Callback {
                 self.input_left[frame] = input[0];
                 self.input_right[frame] = input[1];
             }
-            let panic = self.midi.take_panic();
+            let (panic, panic_token) = self.midi.take_panic();
             if panic {
                 self.router.clear();
             }
@@ -241,6 +241,7 @@ impl Callback {
                 count += self.router.route_into(event, &mut self.events[count..]);
             }
             if let Some(processor) = self.owner.processor.as_mut() {
+                processor.panic_token(panic_token);
                 processor.process(AudioBlock {
                     left: &mut self.left[..frames],
                     right: &mut self.right[..frames],
@@ -1607,6 +1608,75 @@ mod tests {
                 .contains("permission denied")
         );
     }
+    #[test]
+    fn callback_panic_tokens_belong_only_to_their_captured_block() {
+        struct Probe {
+            token: Option<u64>,
+            index: usize,
+            trace: Arc<[AtomicU64; 3]>,
+        }
+        impl AudioProcessor for Probe {
+            fn prepare(&mut self, _: ProcessConfig) -> Result<(), String> {
+                Ok(())
+            }
+            fn panic_token(&mut self, token: Option<u64>) {
+                self.token = token;
+            }
+            fn process(&mut self, block: AudioBlock<'_>) {
+                self.trace[self.index].store(
+                    (self.token.unwrap_or(0) << 1) | u64::from(block.panic),
+                    Ordering::Relaxed,
+                );
+                self.index += 1;
+                block.left.fill(0.0);
+                block.right.fill(0.0);
+            }
+            fn deactivate(&mut self) {}
+        }
+        let (tx, _rx) = bounded(1);
+        let trace = Arc::new(std::array::from_fn(|_| AtomicU64::new(u64::MAX)));
+        let mut callback = Callback {
+            owner: ProcessorOwner {
+                processor: Some(Box::new(Probe {
+                    token: None,
+                    index: 0,
+                    trace: trace.clone(),
+                })),
+                returned: tx,
+            },
+            midi: Arc::new(MidiQueue::new()),
+            router: MidiRouter::new(None),
+            input: InputResampler::new(Arc::new(AtomicQueue::new(8)), false, 2),
+            metrics: Arc::new(Metrics::default()),
+            left: vec![0.0; 2],
+            right: vec![0.0; 2],
+            input_left: vec![0.0; 2],
+            input_right: vec![0.0; 2],
+            events: [MidiEvent {
+                source: 0,
+                data: [0; 3],
+                len: 0,
+            }; MIDI_PER_BLOCK],
+            pending_releases: 0,
+            channels: 2,
+            selection: [0, 1],
+        };
+        assert!(callback.midi.panic_tagged(7));
+        assert_eq!(
+            crate::allocations::count(|| callback.render(&mut [0.0f32; 8])),
+            0
+        );
+        callback.midi.panic();
+        assert_eq!(
+            crate::allocations::count(|| callback.render(&mut [0.0f32; 4])),
+            0
+        );
+        assert_eq!(
+            trace.each_ref().map(|v| v.load(Ordering::Relaxed)),
+            [15, 0, 1]
+        );
+    }
+
     #[test]
     fn variable_callbacks_are_split_without_reallocation_and_processor_is_returned_on_drop() {
         let (tx, rx) = bounded(1);

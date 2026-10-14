@@ -3,9 +3,14 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
+use std::sync::Mutex;
 
 const FORMAT: u32 = 1;
 const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
+// Windows replacement may reject a destination still held by another writer's
+// successful persist(). This control-thread-only guard closes each returned file
+// before the next replacement; runtime's directory lock excludes other hosts.
+static SESSION_WRITER: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionFile {
@@ -50,6 +55,9 @@ pub fn load_session(path: &Path, app_id: &str) -> Result<Option<SessionFile>, St
 /// Same-directory temporary file, sync, then atomic replacement. Existing files
 /// survive serialization/write errors. Call only from a control thread.
 pub fn save_session(path: &Path, session: &SessionFile) -> Result<(), String> {
+    let _writer = SESSION_WRITER
+        .lock()
+        .map_err(|_| "The session writer failed; the previous file is preserved.")?;
     let parent = path
         .parent()
         .ok_or("Session file needs a parent directory")?;

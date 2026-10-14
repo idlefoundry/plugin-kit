@@ -141,4 +141,43 @@ mod tests {
                 .all(|v| *v == session.plugin_state[0])
         );
     }
+
+    #[test]
+    fn automatic_midi_intent_roundtrips_and_legacy_disable_stays_disabled() {
+        let dir = tempfile::tempdir().expect("temp");
+        let path = dir.path().join("session.json");
+        let mut config = Config::initial();
+        config.midi_inputs = vec!["Default endpoint".into()];
+        let session = SessionFile::new("test".into(), config, Vec::new());
+        save_session(&path, &session).expect("save automatic endpoint");
+        assert_eq!(
+            load_session(&path, "test").expect("load"),
+            Some(session.clone())
+        );
+
+        let mut legacy = serde_json::to_value(&session).expect("legacy session");
+        legacy["config"]
+            .as_object_mut()
+            .expect("config")
+            .remove("auto_midi");
+        legacy["config"]["midi_inputs"] = serde_json::json!([]);
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&legacy).expect("serialize legacy"),
+        )
+        .expect("write legacy");
+        let restored = load_session(&path, "test")
+            .expect("legacy load")
+            .expect("session");
+        assert!(
+            !restored.config.auto_midi,
+            "legacy None is explicit and preserved"
+        );
+        assert!(restored.config.midi_inputs.is_empty());
+        save_session(&path, &restored).expect("persist explicit disable");
+        assert_eq!(
+            load_session(&path, "test").expect("load disable"),
+            Some(restored)
+        );
+    }
 }

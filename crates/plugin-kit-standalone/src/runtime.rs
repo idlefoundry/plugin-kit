@@ -798,6 +798,28 @@ fn should_retry_after_poll(active: bool, stopped_by_user: bool, pending: bool) -
     !active && !stopped_by_user && !pending
 }
 
+/// Resolve the default once, when an input actually appears. Retaining the
+/// selected name prevents discovery order or an unplug from switching sources.
+fn resolve_default_midi(config: &mut Config, devices: &Devices) -> bool {
+    if !config.auto_midi || !config.midi_inputs.is_empty() {
+        return false;
+    }
+    let Some(name) = devices.midi_inputs.iter().find(|name| {
+        !name.trim().is_empty()
+            && devices
+                .midi_inputs
+                .iter()
+                .filter(|other| *other == *name)
+                .take(2)
+                .count()
+                == 1
+    }) else {
+        return false;
+    };
+    config.midi_inputs.push(name.clone());
+    true
+}
+
 fn control(
     mut initial: Box<dyn AudioProcessor>,
     state: Option<Arc<dyn SessionState>>,
@@ -941,6 +963,15 @@ fn control(
                         }
                         if changed && active.is_some() {
                             let devices = handle.snapshot().devices;
+                            if !need_apply && resolve_default_midi(&mut config, &devices) {
+                                successful = Some(config.clone());
+                                handle
+                                    .snapshot
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .config = config.clone();
+                                handle.metrics.save_requested.store(true, Ordering::Release);
+                            }
                             if config.output.is_none() && devices.default_output != active_output {
                                 candidate = config.clone();
                                 need_apply = true;
@@ -995,6 +1026,7 @@ fn control(
         if need_apply {
             need_apply = false;
             let devices = handle.snapshot().devices;
+            resolve_default_midi(&mut candidate, &devices);
             let negotiated = negotiate(&candidate, &devices);
             if let (Some(host), Ok(negotiated)) = (&host, negotiated.as_ref()) {
                 set_status(&handle, Phase::Starting, None);
@@ -1435,5 +1467,52 @@ mod tests {
                 .contains("different file")
         );
         assert_eq!(std::fs::read(&path).expect("preserved"), b"different bad");
+    }
+
+    #[test]
+    fn fresh_midi_default_waits_for_a_unique_input_and_keeps_its_endpoint() {
+        let mut config = Config::initial();
+        let mut devices = crate::devices::tests::inventory(2);
+        devices.midi_inputs.clear();
+        assert!(!resolve_default_midi(&mut config, &devices));
+        assert!(config.auto_midi && config.midi_inputs.is_empty());
+
+        devices.midi_inputs = vec![
+            "Duplicate".into(),
+            "First unique".into(),
+            "Duplicate".into(),
+            "Second unique".into(),
+        ];
+        assert!(resolve_default_midi(&mut config, &devices));
+        assert_eq!(config.midi_inputs, ["First unique"]);
+        assert!(config.auto_midi);
+        devices.midi_inputs.reverse();
+        assert!(!resolve_default_midi(&mut config, &devices));
+        assert_eq!(config.midi_inputs, ["First unique"]);
+        devices.midi_inputs = vec!["Different input".into()];
+        assert!(!resolve_default_midi(&mut config, &devices));
+        assert_eq!(
+            config.midi_inputs,
+            ["First unique"],
+            "unplug cannot switch sources"
+        );
+    }
+
+    #[test]
+    fn explicit_midi_selection_or_disable_does_not_resolve_a_default() {
+        let devices = crate::devices::tests::inventory(2);
+        let mut disabled = Config::initial();
+        disabled.auto_midi = false;
+        assert!(!resolve_default_midi(&mut disabled, &devices));
+        assert!(disabled.midi_inputs.is_empty());
+        disabled.midi_inputs = vec!["Requested endpoint".into()];
+        assert!(!resolve_default_midi(&mut disabled, &devices));
+        assert_eq!(disabled.midi_inputs, ["Requested endpoint"]);
+
+        let mut automatic = Config::initial();
+        let mut ambiguous = devices;
+        ambiguous.midi_inputs = vec![String::new(), "Same".into(), "Same".into()];
+        assert!(!resolve_default_midi(&mut automatic, &ambiguous));
+        assert!(automatic.midi_inputs.is_empty());
     }
 }

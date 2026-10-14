@@ -1,3 +1,6 @@
+// Modified by Idle Foundry: CoreAudio stream-lifetime and output-probing
+// backports, plus compiler cleanup. See third_party/cpal/PATCHES.md.
+
 extern crate core_foundation_sys;
 extern crate coreaudio;
 

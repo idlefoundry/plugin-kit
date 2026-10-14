@@ -1,3 +1,6 @@
+// Modified by Idle Foundry: explicit MutexGuard lifetime for compiler
+// compatibility. See third_party/cpal/PATCHES.md.
+
 use crate::FrameCount;
 use crate::{
     BackendSpecificError, BufferSize, Data, DefaultStreamConfigError, DeviceNameError,

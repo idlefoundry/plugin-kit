@@ -1,4 +1,4 @@
-use crate::devices::{describe, enumerate};
+use crate::devices::{Enumeration, MidiDiscovery, describe, enumerate};
 use crate::routing::{CAPTURE_CAPACITY, InputResampler, MIDI_PER_BLOCK, MidiRouter, pack_frame};
 use crate::{
     AppHandle, AppOptions, AudioBlock, AudioProcessor, Command, Config, Devices, MidiEvent,
@@ -820,6 +820,82 @@ fn resolve_default_midi(config: &mut Config, devices: &Devices) -> bool {
     true
 }
 
+#[derive(Default)]
+struct MidiWarnings {
+    empty: Option<String>,
+    connection: Option<String>,
+    reported: Option<String>,
+}
+
+impl MidiWarnings {
+    fn inventory(&mut self, previous: usize, current: usize) {
+        if current > 0 {
+            self.empty = None;
+        } else if previous > 0 && self.empty.is_none() {
+            self.empty = Some(format!(
+                "No MIDI inputs available (previously {previous}). Reconnect the controller or Refresh."
+            ));
+        }
+    }
+
+    fn connections(&mut self, warnings: Vec<String>) {
+        self.connection = (!warnings.is_empty()).then(|| warnings.join(" "));
+    }
+
+    fn publish(&mut self, snapshot: &mut Snapshot) {
+        // Session/audio warnings have priority. Clear or replace only a warning
+        // this MIDI owner actually published, including after successful retry.
+        if snapshot.warning.is_some() && snapshot.warning != self.reported {
+            self.reported = None;
+            return;
+        }
+        let warnings: Vec<_> = self
+            .empty
+            .iter()
+            .chain(self.connection.iter())
+            .cloned()
+            .collect();
+        self.reported = (!warnings.is_empty()).then(|| warnings.join(" "));
+        snapshot.warning.clone_from(&self.reported);
+    }
+}
+
+fn publish_inventory(
+    snapshot: &mut Snapshot,
+    midi_error: &mut Option<String>,
+    warnings: &mut MidiWarnings,
+    mut enumeration: Enumeration,
+) -> bool {
+    if midi_error.is_some() && snapshot.error == *midi_error {
+        snapshot.error = None;
+    }
+    *midi_error = enumeration.midi_error.map(|error| {
+        format!("MIDI discovery failed: {error} Previous inputs retained; Refresh retries.")
+    });
+    if midi_error.is_some() {
+        enumeration
+            .devices
+            .midi_inputs
+            .clone_from(&snapshot.devices.midi_inputs);
+        ensure_midi_error(snapshot, midi_error);
+    } else {
+        warnings.inventory(
+            snapshot.devices.midi_inputs.len(),
+            enumeration.devices.midi_inputs.len(),
+        );
+    }
+    let changed = snapshot.devices != enumeration.devices;
+    snapshot.devices = enumeration.devices;
+    warnings.publish(snapshot);
+    changed
+}
+
+fn ensure_midi_error(snapshot: &mut Snapshot, error: &Option<String>) {
+    if snapshot.error.is_none() {
+        snapshot.error.clone_from(error);
+    }
+}
+
 fn control(
     mut initial: Box<dyn AudioProcessor>,
     state: Option<Arc<dyn SessionState>>,
@@ -871,6 +947,9 @@ fn control(
     let mut midi = Vec::new();
     let mut successful: Option<Config> = None;
     let mut active_output: Option<crate::DeviceId> = None;
+    let mut midi_discovery = MidiDiscovery::default();
+    let mut midi_discovery_error = None;
+    let mut midi_warnings = MidiWarnings::default();
     let mut last_poll = Instant::now() - Duration::from_secs(2);
     let mut last_save = Instant::now();
     let mut need_apply = options.device_access;
@@ -896,6 +975,7 @@ fn control(
             Some(Command::Stop(error)) => {
                 handle.midi.panic();
                 midi.clear();
+                midi_warnings.connections(Vec::new());
                 if let Some(stream) = active.take() {
                     match stream.stop() {
                         Ok(mut p) => {
@@ -920,6 +1000,7 @@ fn control(
             Some(Command::Restore(bytes)) => {
                 handle.midi.panic();
                 midi.clear();
+                midi_warnings.connections(Vec::new());
                 if let Some(stream) = active.take() {
                     match stream.stop() {
                         Ok(mut p) => {
@@ -943,16 +1024,19 @@ fn control(
         if last_poll.elapsed() >= Duration::from_secs(2) {
             last_poll = Instant::now();
             if let Some(host) = &host {
-                match enumerate(host, &options.app_id) {
-                    Ok(devices) => {
+                match enumerate(host, &options.app_id, &mut midi_discovery) {
+                    Ok(enumeration) => {
                         let changed = {
                             let mut snapshot = handle
                                 .snapshot
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            let changed = snapshot.devices != devices;
-                            snapshot.devices = devices;
-                            changed
+                            publish_inventory(
+                                &mut snapshot,
+                                &mut midi_discovery_error,
+                                &mut midi_warnings,
+                                enumeration,
+                            )
                         };
                         // A server/driver can reconnect with exactly the same
                         // device identity. Retry after each successful poll while
@@ -978,16 +1062,16 @@ fn control(
                             } else if negotiate(&config, &devices).is_err() {
                                 handle.metrics.failed.store(true, Ordering::Release);
                             }
-                            // MIDI port lists may change without audio failure.
-                            let warnings =
-                                reconcile_midi(&config, &options.app_id, &handle, &mut midi);
-                            if !warnings.is_empty() {
-                                handle
-                                    .snapshot
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                    .warning = Some(warnings.join(" "));
-                            }
+                        }
+                        // Healthy polling also retries a failed MIDI connection
+                        // with unchanged identity. Existing bindings stay open.
+                        if active.is_some() && !need_apply && midi_discovery_error.is_none() {
+                            midi_warnings.connections(reconcile_midi(
+                                &config,
+                                &options.app_id,
+                                &handle,
+                                &mut midi,
+                            ));
                         }
                     }
                     Err(e) => {
@@ -1004,6 +1088,7 @@ fn control(
         if handle.metrics.failed.swap(false, Ordering::AcqRel) {
             handle.midi.panic();
             midi.clear();
+            midi_warnings.connections(Vec::new());
             if let Some(stream) = active.take() {
                 match stream.stop() {
                     Ok(mut p) => {
@@ -1032,6 +1117,7 @@ fn control(
                 set_status(&handle, Phase::Starting, None);
                 handle.midi.panic();
                 midi.clear();
+                midi_warnings.connections(Vec::new());
                 if let Some(stream) = active.take() {
                     match stream.stop() {
                         Ok(mut p) => {
@@ -1062,6 +1148,7 @@ fn control(
                         let (connections, warnings) =
                             connect_midi(&config, &options.app_id, &handle);
                         midi = connections;
+                        midi_warnings.connections(warnings);
                         {
                             let mut snapshot = handle
                                 .snapshot
@@ -1072,8 +1159,6 @@ fn control(
                             snapshot.error = result.error;
                             if let Some(warning) = result.warning {
                                 snapshot.warning = Some(warning);
-                            } else if !warnings.is_empty() {
-                                snapshot.warning = Some(warnings.join(" "));
                             }
                         }
                         if result.accepted {
@@ -1117,9 +1202,20 @@ fn control(
             );
             report_store(&handle, &result);
         }
+        // Lifecycle operations may clear the ordinary status error. Keep an
+        // unresolved discovery failure visible without replacing audio errors.
+        {
+            let mut snapshot = handle
+                .snapshot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            ensure_midi_error(&mut snapshot, &midi_discovery_error);
+            midi_warnings.publish(&mut snapshot);
+        }
     }
     handle.midi.panic();
     midi.clear();
+    midi_warnings.connections(Vec::new());
     let mut shutdown_error = None;
     if let Some(stream) = active {
         match stream.stop() {
@@ -1147,6 +1243,215 @@ fn control(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn running_inventory_snapshot() -> Snapshot {
+        Snapshot {
+            config: Config::initial(),
+            devices: crate::devices::tests::inventory(2),
+            phase: Phase::Running,
+            error: None,
+            warning: None,
+            actual_sample_rate: 48000,
+            actual_buffer_frames: 256,
+            xruns: 0,
+            midi_overflows: 0,
+            input_overflows: 0,
+        }
+    }
+
+    #[test]
+    fn successful_midi_retry_clears_only_the_owned_unavailable_warning() {
+        let mut snapshot = running_inventory_snapshot();
+        let mut warnings = MidiWarnings::default();
+        warnings.connections(vec!["MIDI input 'Keys' is unavailable.".into()]);
+        warnings.publish(&mut snapshot);
+        assert!(
+            snapshot
+                .warning
+                .as_ref()
+                .expect("connection warning")
+                .contains("unavailable")
+        );
+        warnings.connections(Vec::new());
+        warnings.publish(&mut snapshot);
+        assert!(
+            snapshot.warning.is_none(),
+            "successful reconnect clears stale status"
+        );
+
+        warnings.connections(vec!["MIDI connection failed.".into()]);
+        warnings.publish(&mut snapshot);
+        snapshot.warning = Some("The original session was preserved.".into());
+        warnings.publish(&mut snapshot);
+        assert_eq!(
+            snapshot.warning.as_deref(),
+            Some("The original session was preserved.")
+        );
+        warnings.connections(Vec::new());
+        warnings.publish(&mut snapshot);
+        assert_eq!(
+            snapshot.warning.as_deref(),
+            Some("The original session was preserved.")
+        );
+        snapshot.warning = None;
+        warnings.publish(&mut snapshot);
+        assert!(
+            snapshot.warning.is_none(),
+            "no stale MIDI warning returns after unrelated recovery"
+        );
+    }
+
+    #[test]
+    fn successful_zero_reports_the_previous_count_once_without_retaining_ghost_ports() {
+        let mut snapshot = running_inventory_snapshot();
+        snapshot.devices.midi_inputs.push("Second input".into());
+        let connected = snapshot.devices.clone();
+        let mut empty = connected.clone();
+        empty.midi_inputs.clear();
+        let mut error = None;
+        let mut warnings = MidiWarnings::default();
+        assert!(publish_inventory(
+            &mut snapshot,
+            &mut error,
+            &mut warnings,
+            Enumeration {
+                devices: empty.clone(),
+                midi_error: None,
+            }
+        ));
+        assert!(snapshot.devices.midi_inputs.is_empty());
+        assert!(
+            snapshot.error.is_none(),
+            "successful zero is not an OS query error"
+        );
+        let notice = snapshot
+            .warning
+            .clone()
+            .expect("empty inventory diagnostic");
+        assert!(notice.contains("previously 2") && notice.contains("Refresh"));
+        for _ in 0..5 {
+            assert!(!publish_inventory(
+                &mut snapshot,
+                &mut error,
+                &mut warnings,
+                Enumeration {
+                    devices: empty.clone(),
+                    midi_error: None,
+                }
+            ));
+            assert_eq!(snapshot.warning.as_deref(), Some(notice.as_str()));
+            assert!(snapshot.devices.midi_inputs.is_empty());
+        }
+        publish_inventory(
+            &mut snapshot,
+            &mut error,
+            &mut warnings,
+            Enumeration {
+                devices: connected,
+                midi_error: None,
+            },
+        );
+        assert_eq!(snapshot.devices.midi_inputs.len(), 2);
+        assert!(
+            snapshot.warning.is_none(),
+            "returned inputs clear the owned zero notice"
+        );
+        assert_eq!(snapshot.phase, Phase::Running);
+    }
+
+    #[test]
+    fn midi_discovery_errors_preserve_ports_and_running_audio_until_a_valid_refresh() {
+        let mut snapshot = running_inventory_snapshot();
+        snapshot.warning = Some("Original session warning".into());
+        let config = snapshot.config.clone();
+        let mut discovery_error = None;
+        let mut midi_warnings = MidiWarnings::default();
+        let mut discovered = crate::devices::tests::inventory(8);
+        discovered.midi_inputs.clear();
+        assert!(publish_inventory(
+            &mut snapshot,
+            &mut discovery_error,
+            &mut midi_warnings,
+            Enumeration {
+                devices: discovered.clone(),
+                midi_error: Some("Could not read MIDI input 2: name query failed".into()),
+            }
+        ));
+        assert_eq!(snapshot.devices.midi_inputs, ["Keys"]);
+        assert_eq!(
+            snapshot.devices.audio, discovered.audio,
+            "audio still refreshes"
+        );
+        assert_eq!(snapshot.phase, Phase::Running);
+        assert_eq!(
+            (snapshot.actual_sample_rate, snapshot.actual_buffer_frames),
+            (48000, 256)
+        );
+        assert_eq!(snapshot.config, config);
+        assert_eq!(snapshot.error, discovery_error);
+        assert!(
+            snapshot
+                .error
+                .as_ref()
+                .expect("visible error")
+                .contains("Refresh retries")
+        );
+
+        snapshot.error = None;
+        ensure_midi_error(&mut snapshot, &discovery_error);
+        assert_eq!(
+            snapshot.error, discovery_error,
+            "audio lifecycle cannot hide the MIDI error"
+        );
+        snapshot.error = Some("Audio apply failed".into());
+        ensure_midi_error(&mut snapshot, &discovery_error);
+        assert_eq!(snapshot.error.as_deref(), Some("Audio apply failed"));
+        assert!(publish_inventory(
+            &mut snapshot,
+            &mut discovery_error,
+            &mut midi_warnings,
+            Enumeration {
+                devices: discovered.clone(),
+                midi_error: None,
+            }
+        ));
+        assert!(
+            snapshot.devices.midi_inputs.is_empty(),
+            "valid zero is not a ghost inventory"
+        );
+        assert!(discovery_error.is_none());
+        assert_eq!(snapshot.error.as_deref(), Some("Audio apply failed"));
+        assert_eq!(
+            snapshot.warning.as_deref(),
+            Some("Original session warning")
+        );
+
+        snapshot.error = None;
+        publish_inventory(
+            &mut snapshot,
+            &mut discovery_error,
+            &mut midi_warnings,
+            Enumeration {
+                devices: discovered.clone(),
+                midi_error: Some("Initialization failed".into()),
+            },
+        );
+        assert!(snapshot.error.is_some());
+        publish_inventory(
+            &mut snapshot,
+            &mut discovery_error,
+            &mut midi_warnings,
+            Enumeration {
+                devices: discovered,
+                midi_error: None,
+            },
+        );
+        assert!(
+            snapshot.error.is_none(),
+            "recovery clears only its own error"
+        );
+        assert_eq!(snapshot.phase, Phase::Running);
+    }
 
     #[test]
     fn reconnect_with_unchanged_device_identity_retries_but_user_stop_is_respected() {

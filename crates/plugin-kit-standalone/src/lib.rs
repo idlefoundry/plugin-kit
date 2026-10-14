@@ -34,8 +34,14 @@ pub struct Config {
     pub sample_rate: u32,
     /// Requested frames; actual callback sizes are reported separately.
     pub buffer_frames: u32,
-    /// Empty means no hardware MIDI inputs.
+    /// Requested hardware MIDI inputs. Empty with `auto_midi=false` disables them.
     pub midi_inputs: Vec<String>,
+    /// A fresh session selects the first unambiguous input when one appears.
+    /// Once selected, that endpoint remains requested across restarts/hotplug.
+    /// Explicit input choices, including Disable, turn this off. Legacy sessions
+    /// without the flag retain their existing selection, including no inputs.
+    #[serde(default)]
+    pub auto_midi: bool,
     /// None receives all channels; Some(1)..Some(16) filters hardware MIDI.
     pub midi_channel: Option<u8>,
 }
@@ -45,6 +51,7 @@ impl Config {
         Self {
             output_channels: [0, 1],
             buffer_frames: 256,
+            auto_midi: true,
             ..Self::default()
         }
     }

@@ -17,7 +17,8 @@ not create the editor or change the circuit: the instrument supplies an
    held notes, transient wheel positions and active gestures.
 3. Call `spawn`, install `AppHandle::install_current(&runtime.handle())`, and call
    `runtime.wait_ready(Duration::from_secs(2))` before asking the editor for its
-   persisted size. Device discovery and opening follow on the control thread.
+   persisted size. Cold DSP preparation, device discovery and opening follow on
+   the control thread; readiness guarantees restored shared state, not warm DSP.
 4. Only a standalone editor context should read `AppHandle::current()`. Settings
    read `snapshot()` and send `apply`, `refresh`, `save`, `restore_state` or `stop`.
    The audio callback never acquires the snapshot mutex.

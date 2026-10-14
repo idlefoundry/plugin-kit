@@ -13,7 +13,7 @@ pub use plugin_kit_queue::{AtomicQueue, QueuePush};
 pub use routing::{MidiQueue, route_output, sanitize_input};
 pub use runtime::{HostRuntime, spawn};
 
-use crossbeam_channel::Sender;
+use crossbeam_channel::{Receiver, Sender, TryRecvError, bounded};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -159,11 +159,64 @@ impl Snapshot {
 
 pub(crate) enum Command {
     Apply(Config),
+    ApplyTracked(Config, Sender<Result<Config, String>>),
     Restore(Vec<u8>),
     Stop(String),
     Refresh,
     Save,
     Shutdown,
+}
+
+/// Completion of one queued settings application, polled by a UI/control thread.
+/// Success contains the accepted, normalised configuration. A snapshot's phase
+/// or configuration alone cannot identify completion of a particular request.
+#[derive(Debug)]
+pub struct ApplyReceipt {
+    result: Receiver<Result<Config, String>>,
+}
+impl ApplyReceipt {
+    /// Poll once per UI frame until a result is returned. Never blocks. After
+    /// receiving success or failure, discard the receipt.
+    pub fn try_result(&self) -> Result<Option<Config>, String> {
+        match self.result.try_recv() {
+            Ok(result) => result.map(Some),
+            Err(TryRecvError::Empty) => Ok(None),
+            Err(TryRecvError::Disconnected) => {
+                Err("Standalone stopped before applying settings.".into())
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod apply_receipt_tests {
+    use super::*;
+
+    #[test]
+    fn receipt_is_pending_until_its_result_and_returns_the_accepted_configuration() {
+        let (finished, result) = bounded(1);
+        let receipt = ApplyReceipt { result };
+        assert_eq!(receipt.try_result(), Ok(None));
+        let config = Config {
+            sample_rate: 48_000,
+            ..Config::initial()
+        };
+        finished.try_send(Ok(config.clone())).expect("complete");
+        assert_eq!(receipt.try_result(), Ok(Some(config)));
+    }
+
+    #[test]
+    fn control_thread_exit_completes_an_unanswered_receipt_with_an_error() {
+        let (finished, result) = bounded(1);
+        let receipt = ApplyReceipt { result };
+        drop(finished);
+        assert!(
+            receipt
+                .try_result()
+                .expect_err("closed host")
+                .contains("stopped")
+        );
+    }
 }
 
 /// UI/control bridge. Snapshot locks are never acquired by an audio callback.
@@ -209,6 +262,13 @@ impl AppHandle {
     }
     pub fn apply(&self, config: Config) -> Result<(), String> {
         self.submit(Command::Apply(config))
+    }
+    /// Queue settings and receive the outcome for this exact application. The
+    /// control thread publishes its resulting status before completing it.
+    pub fn apply_tracked(&self, config: Config) -> Result<ApplyReceipt, String> {
+        let (finished, result) = bounded(1);
+        self.submit(Command::ApplyTracked(config, finished))?;
+        Ok(ApplyReceipt { result })
     }
     pub fn refresh(&self) -> Result<(), String> {
         self.submit(Command::Refresh)

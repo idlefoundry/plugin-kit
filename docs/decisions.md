@@ -506,3 +506,16 @@ event from restarting a note afterward. There are 28 standalone tests and two
 queue tests, including these reproductions; strict Clippy and formatting pass.
 The separate CPAL CoreAudio retention/capability fixes are owned by the lead and
 must be integrated before claiming verified macOS stream lifecycle behavior.
+
+## K-APPLY-RECEIPT. Explicit standalone settings completion
+
+2026-10-14: CA-72's Done/Apply UI needs the outcome of its exact application.
+Running plus matching configuration cannot identify completion: an older snapshot
+can match a queued request, and repeated failures can leave the same status and
+configuration. Add `AppHandle::apply_tracked` alongside the existing `apply` API.
+A bounded, nonblocking completion receipt returns the accepted normalised Config
+or a failure after the control thread publishes the attempt's resulting status.
+Each request has its own channel; dropping a dialog cannot block the host, and
+control-thread exit reports a disconnected receipt. No callback, persistence or
+automatic-recovery behavior changes. CA-72 is the first consumer; other instruments
+can adopt this additive API when they add an explicit settings completion UI.

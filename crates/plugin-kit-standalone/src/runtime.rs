@@ -965,12 +965,19 @@ fn control(
             break;
         }
         let command = commands.recv_timeout(Duration::from_millis(100)).ok();
+        let mut apply_reply = None;
         match command {
             Some(Command::Shutdown) => break,
             Some(Command::Apply(new)) => {
                 candidate = new;
                 need_apply = true;
                 stopped_by_user = false;
+            }
+            Some(Command::ApplyTracked(new, reply)) => {
+                candidate = new;
+                need_apply = true;
+                stopped_by_user = false;
+                apply_reply = Some(reply);
             }
             Some(Command::Stop(error)) => {
                 handle.midi.panic();
@@ -1110,6 +1117,7 @@ fn control(
         }
         if need_apply {
             need_apply = false;
+            let mut accepted = false;
             let devices = handle.snapshot().devices;
             resolve_default_midi(&mut candidate, &devices);
             let negotiated = negotiate(&candidate, &devices);
@@ -1143,6 +1151,7 @@ fn control(
                     }
                     if result.accepted {
                         successful = Some(config.clone());
+                        accepted = true;
                     }
                     if active.is_some() {
                         let (connections, warnings) =
@@ -1183,6 +1192,17 @@ fn control(
                     },
                     Some(e),
                 );
+            }
+            if let Some(reply) = apply_reply {
+                let outcome = if accepted {
+                    Ok(config.clone())
+                } else {
+                    Err(handle.snapshot().error.unwrap_or_else(|| {
+                        "Settings could not be applied; no audio device is running.".into()
+                    }))
+                };
+                // A dismissed UI drops its receiver; completion never blocks.
+                let _ = reply.try_send(outcome);
             }
         }
         if last_save.elapsed() >= Duration::from_secs(5)
@@ -1632,6 +1652,50 @@ mod tests {
         drop(callback);
         assert!(rx.try_recv().is_ok());
     }
+    #[test]
+    fn tracked_applications_report_repeated_failures_for_their_own_request() {
+        let dir = tempfile::tempdir().expect("temp");
+        let mut runtime = spawn(
+            Box::new(Fake),
+            None,
+            AppOptions {
+                app_id: "TrackedApplyTest".into(),
+                state_dir: dir.path().into(),
+                device_access: false,
+            },
+        )
+        .expect("spawn");
+        runtime.wait_ready(Duration::from_secs(2)).expect("ready");
+        let handle = runtime.handle();
+        let first = handle
+            .apply_tracked(Config::initial())
+            .expect("first queued");
+        let second = handle
+            .apply_tracked(Config::initial())
+            .expect("second queued");
+        let first = first
+            .result
+            .recv_timeout(Duration::from_secs(2))
+            .expect("first completion");
+        let second = second
+            .result
+            .recv_timeout(Duration::from_secs(2))
+            .expect("second completion");
+        assert!(first.is_err());
+        assert_eq!(
+            first, second,
+            "identical errors still complete both requests"
+        );
+        drop(
+            handle
+                .apply_tracked(Config::initial())
+                .expect("dismissed request"),
+        );
+        runtime
+            .shutdown()
+            .expect("dropped receipt cannot block shutdown");
+    }
+
     #[test]
     fn no_device_runtime_keeps_handle_and_shutdown_works_without_callbacks() {
         let dir = tempfile::tempdir().expect("temp");

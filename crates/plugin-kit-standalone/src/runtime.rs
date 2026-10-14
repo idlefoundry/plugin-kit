@@ -52,9 +52,9 @@ impl HostRuntime {
     pub fn handle(&self) -> Arc<AppHandle> {
         Arc::clone(&self.handle)
     }
-    /// Wait only for shared session restoration and stopped-DSP initialization,
-    /// before asking the editor for its persisted initial size. Hardware opening
-    /// follows on the control thread and does not delay this handshake.
+    /// Wait only for shared session restoration before asking the editor for its
+    /// persisted initial size. Cold DSP preparation and hardware opening follow
+    /// on the control thread and do not delay this handshake.
     pub fn wait_ready(&self, timeout: Duration) -> Result<(), String> {
         if self.handle.metrics.ready.load(Ordering::Acquire) {
             return Ok(());
@@ -931,6 +931,16 @@ fn control(
                 .warning = Some(e);
         }
     }
+    // The GUI needs restored fields and configuration, not a warmed DSP. Factory
+    // calibration may take seconds on a cold process; it must not turn a valid
+    // saved session into a startup timeout. All audio/commands still wait below.
+    handle
+        .snapshot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .config = config.clone();
+    handle.metrics.ready.store(true, Ordering::Release);
+    let _ = ready.try_send(());
     // Initialize stopped DSP once so parameter editing/state methods have their
     // expected lifecycle even when no audio hardware is available.
     if let Err(e) = initial.prepare(ProcessConfig {
@@ -940,8 +950,6 @@ fn control(
         set_status(&handle, Phase::Error, Some(e));
     }
     initial.deactivate();
-    handle.metrics.ready.store(true, Ordering::Release);
-    let _ = ready.try_send(());
     let host = options.device_access.then(cpal::default_host);
     let mut processor = Some(initial);
     let mut active: Option<Active> = None;
@@ -1767,6 +1775,71 @@ mod tests {
         runtime
             .shutdown()
             .expect("dropped receipt cannot block shutdown");
+    }
+
+    #[test]
+    fn restored_session_is_ready_while_cold_processor_preparation_is_pending() {
+        struct Cold {
+            entered: Sender<()>,
+            release: Receiver<()>,
+        }
+        impl AudioProcessor for Cold {
+            fn prepare(&mut self, _: ProcessConfig) -> Result<(), String> {
+                self.entered.send(()).expect("entered prepare");
+                self.release
+                    .recv_timeout(Duration::from_secs(3))
+                    .expect("release prepare");
+                Ok(())
+            }
+            fn process(&mut self, _: AudioBlock<'_>) {}
+            fn deactivate(&mut self) {}
+        }
+        struct Restored(AtomicBool);
+        impl SessionState for Restored {
+            fn save(&self) -> Result<Vec<u8>, String> {
+                Ok(vec![42])
+            }
+            fn restore(&self, bytes: &[u8]) -> Result<(), String> {
+                assert_eq!(bytes, &[42]);
+                self.0.store(true, Ordering::Release);
+                Ok(())
+            }
+        }
+        let dir = tempfile::tempdir().expect("temp");
+        let mut config = Config::initial();
+        config.buffer_frames = 512;
+        save_session(
+            &dir.path().join("session.json"),
+            &SessionFile::new("Test".into(), config.clone(), vec![42]),
+        )
+        .expect("seed session");
+        let state = Arc::new(Restored(AtomicBool::new(false)));
+        let (entered, preparing) = bounded(1);
+        let (release, released) = bounded(1);
+        let mut runtime = spawn(
+            Box::new(Cold {
+                entered,
+                release: released,
+            }),
+            Some(state.clone()),
+            AppOptions {
+                app_id: "Test".into(),
+                state_dir: dir.path().into(),
+                device_access: false,
+            },
+        )
+        .expect("spawn");
+        preparing
+            .recv_timeout(Duration::from_secs(2))
+            .expect("preparing");
+        let ready = runtime.wait_ready(Duration::from_millis(100));
+        let restored_before_release = state.0.load(Ordering::Acquire);
+        let config_before_release = runtime.handle().snapshot().config;
+        release.send(()).expect("release");
+        runtime.shutdown().expect("shutdown");
+        ready.expect("restored session must not wait for cold DSP preparation");
+        assert!(restored_before_release);
+        assert_eq!(config_before_release, config);
     }
 
     #[test]

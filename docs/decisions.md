@@ -536,3 +536,19 @@ metadata, including None on following nonpanic blocks. Consumers acknowledge onl
 an exact matching UI token. Core tests cover capture interleaving, coalescing,
 overflow, invalid tags and allocation-free per-block metadata clearing. CA-72 is
 the first consumer; its adapter and note-source race regressions are checked there.
+
+## K-STARTUP-READY. Restore the editor before warming the DSP
+
+2026-10-14: CA-72's exact-artifact macOS native check opened a fresh session but
+reported a startup timeout reopening its saved session. The control thread later
+rewrote that session correctly. The GUI's two-second readiness wait included cold
+processor preparation, whose circuit factory calibration may take seconds. That
+work does not determine the editor's restored size and must not hold the handshake.
+
+Publish readiness and the restored configuration immediately after session restore,
+then prepare/deactivate the stopped processor on the same control thread before
+handling commands or opening devices. Audio processing and persistence formats are
+unchanged. A channel-gated cold processor proves restored state/configuration are
+available while preparation is still pending; the test failed before this change.
+All 43 standalone tests and strict workspace Clippy pass locally. The consumer's
+native two-launch restoration check remains required on its updated artifact.

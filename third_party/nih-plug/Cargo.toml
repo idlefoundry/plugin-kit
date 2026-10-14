@@ -23,6 +23,8 @@ assert_process_allocs = ["dep:assert_no_alloc"]
 # `nih_export_standalone()` function. Disabled by default as this requires
 # building additional dependencies for audio and MIDI handling.
 standalone = ["dep:baseview", "dep:clap", "dep:cpal", "dep:jack", "dep:midir", "dep:rtrb"]
+# Shipped app host, independent of the legacy launcher's JACK dependency.
+standalone-production = ["dep:baseview", "dep:plugin-kit-standalone", "dep:rtrb"]
 # Enables the `nih_export_vst3!()` macro. Enabled by default. This feature
 # exists mostly for GPL-compliance reasons, since even if you don't use the VST3
 # wrapper you might otherwise still include a couple (unused) symbols from the
@@ -74,6 +76,7 @@ clap = { version = "4.1.8", features = ["derive", "wrap_help"], optional = true 
 cpal = { version = "0.15", optional = true }
 jack = { version = "0.11.4", optional = true }
 midir = { version = "0.9.1", optional = true }
+plugin-kit-standalone = { path = "../../crates/plugin-kit-standalone", optional = true }
 rtrb = { version = "0.2.2", optional = true }
 
 # Used for the `vst3` feature

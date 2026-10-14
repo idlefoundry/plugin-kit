@@ -170,3 +170,15 @@ Windows 11 (2026-10-07; the CA-72's `docs/decisions.md` R36, its change 12; K4 h
 To move to a newer upstream commit, copy its `Cargo.toml`, `LICENSE`, `README.md`, `src`
 and `nih_plug_derive` here and apply the fifteen changes again, unless upstream has fixed them.
 Then update the commit above, and `nih_plug_xtask`'s `rev` in each plug-in's workspace `Cargo.toml`.
+
+16. **A shipped standalone adapter shares the exact instrument and editor.**
+    `standalone-production` exports `wrapper::production`, independently of the
+    development launcher's JACK dependency. The exclusively owned processor is
+    moved into `plugin-kit-standalone` streams and reclaimed on their destruction.
+    Shared parameter values can be edited while stopped; smoothers are changed
+    only by the processor. Sessions validate migrated copies before restoring
+    the original once; enum validation adds `EnumParamInner::has_id`. Optional
+    auxiliary input uses the normal plugin path. Callback task mailboxes are
+    preallocated SPSC queues and require `Copy` payloads, so exhaustion cannot
+    invoke a task destructor. The single task executor is shared only on control
+    threads. An omni instrument explicitly opts into global controller resets.

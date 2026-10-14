@@ -20,3 +20,6 @@ floor. No other backend, API or audio-format behavior is deliberately changed.
 These defects were found by independent standalone review. Native stream lifecycle
 verification is recorded in the instrument's standalone evidence; a pointer-ownership
 unit test alone does not establish CoreAudio listener removal/concurrent close safety.
+
+Two compiler-only cleanups remove an unused CoreAudio `Rc` import and spell out
+WASAPI's elided `MutexGuard` lifetime. They have no runtime effect.

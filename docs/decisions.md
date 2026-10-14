@@ -519,3 +519,20 @@ Each request has its own channel; dropping a dialog cannot block the host, and
 control-thread exit reports a disconnected receipt. No callback, persistence or
 automatic-recovery behavior changes. CA-72 is the first consumer; other instruments
 can adopt this additive API when they add an explicit settings completion UI.
+
+## K-PANIC-TOKEN. Preserve the identity of a captured standalone panic
+
+2026-10-14: independent CA-72 integration review reproduced two UI PANIC clicks
+straddling a captured callback. A boolean hardware reset could acknowledge the
+newer UI epoch, allowing a later callback to cancel a fresh note. Add the optional
+`AppHandle::panic_tagged` API and a default `AudioProcessor::panic_token` metadata
+hook without changing `AudioBlock` or behavior for existing untagged callers.
+
+One atomic packs the pending bit and a nonzero 63-bit UI token. The callback captures
+both with one swap. Generic resets and MIDI queue overflow preserve a pending token;
+multiple tagged requests coalesce to the last published one. Invalid tokens are
+rejected without overwriting a pending request. Each process call receives its own
+metadata, including None on following nonpanic blocks. Consumers acknowledge only
+an exact matching UI token. Core tests cover capture interleaving, coalescing,
+overflow, invalid tags and allocation-free per-block metadata clearing. CA-72 is
+the first consumer; its adapter and note-source race regressions are checked there.

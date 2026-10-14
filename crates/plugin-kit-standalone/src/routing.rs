@@ -1,7 +1,7 @@
 use crate::{MidiEvent, MidiResetScope};
 use plugin_kit_queue::AtomicQueue;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 pub const MIDI_CAPACITY: usize = 2048;
 pub(crate) const MIDI_PER_BLOCK: usize = 256;
@@ -122,7 +122,8 @@ impl InputResampler {
 #[derive(Debug)]
 pub struct MidiQueue {
     queue: AtomicQueue,
-    panic: AtomicBool,
+    // Bit zero requests reset; the remaining bits identify a paired UI request.
+    panic: AtomicU64,
     overflows: AtomicU64,
     releases: AtomicU64,
     epochs: [AtomicU32; 65],
@@ -169,7 +170,7 @@ impl MidiQueue {
     pub fn new() -> Self {
         Self {
             queue: AtomicQueue::new(MIDI_CAPACITY),
-            panic: AtomicBool::new(false),
+            panic: AtomicU64::new(0),
             overflows: AtomicU64::new(0),
             releases: AtomicU64::new(0),
             epochs: std::array::from_fn(|_| AtomicU32::new(0)),
@@ -200,14 +201,22 @@ impl MidiQueue {
         );
         if !self.queue.try_push(queued) {
             self.overflows.fetch_add(1, Ordering::Relaxed);
-            self.panic.store(true, Ordering::Release);
+            self.panic();
             false
         } else {
             true
         }
     }
     pub fn panic(&self) {
-        self.panic.store(true, Ordering::Release);
+        // Preserve a pending UI identity when an overflow/device reset coalesces with it.
+        self.panic.fetch_or(1, Ordering::AcqRel);
+    }
+    pub(crate) fn panic_tagged(&self, token: u64) -> bool {
+        if token == 0 || token > (u64::MAX >> 1) {
+            return false;
+        }
+        self.panic.store((token << 1) | 1, Ordering::Release);
+        true
     }
     pub fn overflows(&self) -> u64 {
         self.overflows.load(Ordering::Relaxed)
@@ -225,9 +234,10 @@ impl MidiQueue {
     pub(crate) fn take_releases(&self) -> u64 {
         self.releases.swap(0, Ordering::AcqRel)
     }
-    pub(crate) fn take_panic(&self) -> bool {
-        if !self.panic.swap(false, Ordering::AcqRel) {
-            return false;
+    pub(crate) fn take_panic(&self) -> (bool, Option<u64>) {
+        let request = self.panic.swap(0, Ordering::AcqRel);
+        if request == 0 {
+            return (false, None);
         }
         // A producer can be preempted after encoding but before publishing.
         // Advance every source generation before draining, so that its eventual
@@ -242,7 +252,7 @@ impl MidiQueue {
                 break;
             }
         }
-        true
+        (true, (request >> 1 != 0).then_some(request >> 1))
     }
     pub(crate) fn pop_raw(&self) -> Option<(MidiEvent, bool)> {
         self.queue.try_pop().map(|queued| {
@@ -569,6 +579,50 @@ mod tests {
         assert!(r.route(event(0, 0, true)).is_some());
     }
     #[test]
+    fn tagged_panics_preserve_capture_identity_and_generic_resets() {
+        let q = MidiQueue::new();
+        assert!(q.panic_tagged(1));
+        let captured = q.take_panic();
+        assert!(q.panic_tagged(2));
+        q.panic();
+        assert_eq!(captured, (true, Some(1)));
+        assert_eq!(q.take_panic(), (true, Some(2)));
+        assert_eq!(q.take_panic(), (false, None));
+        q.panic();
+        assert!(q.panic_tagged(3));
+        assert!(q.panic_tagged(4));
+        assert_eq!(
+            q.take_panic(),
+            (true, Some(4)),
+            "requests coalesce before capture"
+        );
+        assert!(q.panic_tagged(5));
+        assert!(!q.panic_tagged(0));
+        assert!(!q.panic_tagged(u64::MAX));
+        assert_eq!(
+            q.take_panic(),
+            (true, Some(5)),
+            "invalid tokens cannot overwrite pending identity"
+        );
+        assert!(q.panic_tagged(6));
+        for _ in 0..MIDI_CAPACITY {
+            assert!(q.push(event(1, 0, true)));
+        }
+        assert!(!q.push(event(1, 0, false)));
+        assert_eq!(
+            q.take_panic(),
+            (true, Some(6)),
+            "overflow preserves pending identity"
+        );
+        q.panic();
+        assert_eq!(
+            q.take_panic(),
+            (true, None),
+            "generic reset cannot replay an old token"
+        );
+    }
+
+    #[test]
     fn queue_overflow_requests_release_and_discards_stale_events() {
         let q = MidiQueue::new();
         for _ in 0..MIDI_CAPACITY {
@@ -576,16 +630,16 @@ mod tests {
         }
         assert!(!q.push(event(1, 0, false)));
         assert_eq!(q.overflows(), 1);
-        assert!(q.take_panic());
+        assert_eq!(q.take_panic(), (true, None));
         assert!(q.pop().is_none());
-        assert!(!q.take_panic());
+        assert_eq!(q.take_panic(), (false, None));
     }
     #[test]
     fn resumed_preempted_producer_cannot_publish_a_stale_note_after_panic() {
         let queue = MidiQueue::new();
         let delayed = pack_midi(event(1, 0, true), queue.epochs[1].load(Ordering::Acquire));
         queue.panic();
-        assert!(queue.take_panic());
+        assert_eq!(queue.take_panic(), (true, None));
         assert!(
             queue.queue.try_push(delayed),
             "producer resumes publication"
@@ -649,7 +703,7 @@ mod tests {
         );
         assert!(queue.pop().is_none());
         assert_eq!(
-            queue.take_panic(),
+            queue.take_panic().0,
             queue.overflows() != 0,
             "a contended producer fails closed"
         );

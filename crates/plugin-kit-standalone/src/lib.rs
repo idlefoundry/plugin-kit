@@ -98,6 +98,11 @@ impl std::fmt::Debug for AudioBlock<'_> {
 }
 
 pub trait AudioProcessor: Send + 'static {
+    /// Metadata for the immediately following `process` call. A tagged panic is captured
+    /// atomically with `AudioBlock::panic`; None means no tagged request in this block.
+    /// This is called for every block, including blocks with no panic. Implementations
+    /// must not allocate, block or wait. Existing processors may ignore it.
+    fn panic_token(&mut self, _token: Option<u64>) {}
     /// An omni instrument may deliberately preserve its global controller-reset
     /// behavior; generic instruments default to per-source/channel releases.
     fn midi_reset_scope(&self) -> MidiResetScope {
@@ -293,6 +298,12 @@ impl AppHandle {
     }
     pub fn panic(&self) {
         self.midi.panic();
+    }
+    /// Pair a UI reset with its eventual callback reset. Coalesced requests deliver the
+    /// latest token captured by that callback, never a later UI request. Tokens must be
+    /// nonzero and at most `u64::MAX >> 1`; invalid tokens return false without a request.
+    pub fn panic_tagged(&self, token: u64) -> bool {
+        self.midi.panic_tagged(token)
     }
     pub fn midi(&self, event: MidiEvent) -> bool {
         self.midi.push(event)

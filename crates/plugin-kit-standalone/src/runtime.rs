@@ -794,6 +794,10 @@ fn transition<T>(
     }
 }
 
+fn should_retry_after_poll(active: bool, stopped_by_user: bool, pending: bool) -> bool {
+    !active && !stopped_by_user && !pending
+}
+
 fn control(
     mut initial: Box<dyn AudioProcessor>,
     state: Option<Arc<dyn SessionState>>,
@@ -928,7 +932,10 @@ fn control(
                             snapshot.devices = devices;
                             changed
                         };
-                        if changed && active.is_none() && !stopped_by_user && !need_apply {
+                        // A server/driver can reconnect with exactly the same
+                        // device identity. Retry after each successful poll while
+                        // stopped, rather than requiring a device-list change.
+                        if should_retry_after_poll(active.is_some(), stopped_by_user, need_apply) {
                             candidate = config.clone();
                             need_apply = true;
                         }
@@ -952,7 +959,14 @@ fn control(
                             }
                         }
                     }
-                    Err(e) => set_status(&handle, Phase::Error, Some(e)),
+                    Err(e) => {
+                        // ALSA can stop delivering callbacks when its server
+                        // disappears without issuing CPAL's stream error callback.
+                        if active.is_some() {
+                            handle.metrics.failed.store(true, Ordering::Release);
+                        }
+                        set_status(&handle, Phase::Error, Some(e));
+                    }
                 }
             }
         }
@@ -1101,6 +1115,14 @@ fn control(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconnect_with_unchanged_device_identity_retries_but_user_stop_is_respected() {
+        assert!(should_retry_after_poll(false, false, false));
+        assert!(!should_retry_after_poll(true, false, false));
+        assert!(!should_retry_after_poll(false, true, false));
+        assert!(!should_retry_after_poll(false, false, true));
+    }
     struct Fake;
     impl AudioProcessor for Fake {
         fn prepare(&mut self, _: ProcessConfig) -> Result<(), String> {

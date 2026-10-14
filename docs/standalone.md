@@ -85,7 +85,10 @@ warnings; other ports and audio remain usable.
 Device inventories refresh every two seconds. Selected identities must match one
 device exactly; absent or duplicate identities cannot silently select a different
 interface. Device loss releases notes, tears down the streams and keeps the
-editor alive. A changed inventory can retry an unambiguously reconnected device.
+editor alive. A successful inventory poll retries a stopped configuration even
+when the reconnected device has exactly the same identity. Failed enumeration
+also tears down an active stream: an ALSA server may disappear without CPAL
+issuing its stream error callback.
 MIDI inventory changes retain surviving connections and release only lost sources.
 Processor faults submitted through `stop` require explicit Apply before retry.
 
@@ -100,6 +103,9 @@ while the app runs resumes saves; a replacement file is preserved. Save requests
 coalesce behind a 250 ms gate. A `File::try_lock` on `instance.lock` makes one app
 instance own each state directory; another instance is refused before loading or
 writing that session. Different state directories remain independent.
+Control-thread save calls are serialized within the process so Windows cannot
+reject a competing atomic replacement while the preceding writer still holds
+the destination open.
 
 ## Support limits to retain in product documentation
 
@@ -134,7 +140,7 @@ CARGO_BUILD_JOBS=4 nice -n 19 ionice -c 3 cargo clippy -p plugin-kit-queue -p pl
 cargo fmt -p plugin-kit-queue -p plugin-kit-standalone -- --check
 ```
 
-Twenty-eight standalone tests and two queue tests cover identity ambiguity/missing devices, capability negotiation,
+Twenty-nine standalone tests and two queue tests cover identity ambiguity/missing devices, capability negotiation,
 mono/multichannel routing, NaN/Inf input, overlapping source/channel ownership,
 velocity-zero note-offs, MIDI channel filtering, concurrent producers, overflow
 recovery, malformed/unsupported session preservation, interrupted/competing atomic
@@ -146,3 +152,33 @@ Review regressions cover controller scope, accepted source identity, bounded lar
 source releases, stale packets from preempted producers, moved/replaced bad session
 files, final-save errors, instance ownership, coalesced saves, range-specific sample
 format selection and recent-input recovery after a one-second capture backlog.
+
+### Isolated Linux callbacks
+
+`python scripts/standalone-virtual/verify.py` is an explicit integration fixture,
+requiring installed PipeWire, PipeWire ALSA, ALSA development files and Python3.
+It builds only the probe with four low-priority jobs into its own temporary
+target directory. It starts a private server socket/config and contains no udev,
+hardware/device factory or session manager. `ALSA_CONFIG_PATH` redirects both
+the default PCM and hardware control name hints to that private server. MIDI
+sequencer access is absent from the private ALSA configuration. The graph has
+only a dummy driver, null sink and virtual null source; the fixture inspects the
+graph and rejects device objects/hardware properties. Known left/right playback
+is linked through the sink monitor and source into capture. Cleanup signals only
+child processes it created; logs/config/evidence remain in `/tmp`.
+
+The integration run verifies live playback, correctly ordered nonzero stereo
+capture, Apply at 48kHz/128 frames, 44.1kHz/256 frames and 48kHz/256 frames,
+private-server disconnection and automatic recovery, preservation of the same
+processor, and close under two seconds with exactly one processor Drop. The
+2026-10-13 run recovered without Apply, allocated the processor once, and closed
+in 1 ms or less. Requested periods remain preferences: this PipeWire/ALSA graph
+delivered 64 frames at 48 kHz and 117/118 frames at 44.1 kHz; the snapshot reports those
+observed sizes. This tests actual Linux backend callbacks without claiming
+physical interface latency, hardware hotplug, microphone permission behavior,
+or Windows/macOS driver verification.
+
+The isolation follows primary documentation for [PipeWire configuration](https://docs.pipewire.org/page_man_pipewire_conf_5.html),
+[runtime/remote selection](https://pipewire.pages.freedesktop.org/pipewire/page_man_pipewire_1.html),
+[the PipeWire ALSA PCM](https://github.com/PipeWire/pipewire/blob/master/pipewire-alsa/conf/50-pipewire.conf),
+and [ALSA_CONFIG_PATH](https://www.alsa-project.org/wiki/LibEnvVars).

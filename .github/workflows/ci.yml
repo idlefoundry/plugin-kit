@@ -81,3 +81,6 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = Linux ]; then export REQUIRE_NGSPICE=1; fi
           cargo test --workspace --no-fail-fast
+
+      - name: Typed persistent-field derive tests
+        run: CARGO_TARGET_DIR="$RUNNER_TEMP/plugin-kit-derive" cargo test --manifest-path third_party/nih-plug/nih_plug_derive/Cargo.toml

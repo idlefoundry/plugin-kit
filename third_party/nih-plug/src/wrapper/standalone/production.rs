@@ -174,6 +174,11 @@ impl<P: Plugin> SessionState for Session<P> {
         // instrument's compatibility migration exactly once to the original.
         let mut validated = restored.clone();
         P::filter_state(&mut validated);
+        self.params
+            .validate_fields(&validated.fields)
+            .map_err(|error| {
+                format!("The instrument session contains an invalid saved field: {error}")
+            })?;
         for (id, value) in &validated.params {
             if !self.by_id.contains_key(id) {
                 continue;
@@ -503,6 +508,9 @@ where
 {
     fn plugin_api(&self) -> PluginApi {
         PluginApi::Standalone
+    }
+    fn take_standalone_panic(&mut self) -> bool {
+        self.panic_channel.take().is_some()
     }
     fn execute_background(&self, task: P::BackgroundTask) {
         if let Ok(mut producer) = self.background_tasks.try_borrow_mut() {

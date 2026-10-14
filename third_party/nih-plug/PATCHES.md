@@ -182,3 +182,12 @@ Then update the commit above, and `nih_plug_xtask`'s `rev` in each plug-in's wor
     preallocated SPSC queues and require `Copy` payloads, so exhaustion cannot
     invoke a task destructor. The single task executor is shared only on control
     threads. An omni instrument explicitly opts into global controller resets.
+
+    Typed session preflight adds `PersistentField::validate` and derived
+    `Params::validate_fields`, including nested/prefixed/array fields and Arc
+    forwarding. Validation follows migration and precedes every state setter;
+    wrong-type fields cannot partially mutate a standalone session.
+    `ProcessContext::take_standalone_panic` defaults to false in hosted contexts.
+    The production context offers one boundary reset to opting-in instruments;
+    other instruments keep synthetic CC120/121. CA-72 coalesces that boundary
+    with its UI panic so fresh local notes survive either callback ordering.

@@ -316,3 +316,67 @@ mod param_groups {
         );
     }
 }
+
+mod persistent_field_validation {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicBool, AtomicU8};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default, Params)]
+    struct Fields {
+        #[persist = "keyboard"]
+        keyboard: Arc<AtomicBool>,
+        #[persist = "root"]
+        root: AtomicU8,
+        #[persist = "preset"]
+        preset: Mutex<String>,
+        #[persist = "midi_map"]
+        midi_map: Mutex<BTreeMap<String, u8>>,
+    }
+
+    #[derive(Default, Params)]
+    struct NestedFields {
+        #[nested]
+        inline: Fields,
+        #[nested(id_prefix = "part")]
+        prefixed: Fields,
+        #[nested(array)]
+        array: [Fields; 2],
+    }
+
+    #[test]
+    fn typed_preflight_recurses_without_mutation_and_ignores_unknown_or_missing_fields() {
+        let params = Arc::new(NestedFields::default());
+        let before = params.serialize_fields();
+        assert!(params.validate_fields(&before).is_ok());
+        assert!(params.validate_fields(&BTreeMap::new()).is_ok());
+        let mut future = before.clone();
+        future.insert("future_schema_field".into(), "{\"new\":[]}".into());
+        assert!(params.validate_fields(&future).is_ok());
+        assert_eq!(params.serialize_fields(), before);
+
+        for (field, wrong_type) in [
+            ("keyboard", "\"false\""),
+            ("part_keyboard", "0"),
+            ("root_2", "256"),
+            ("preset_1", "{}"),
+            ("part_midi_map", "{\"cutoff\":\"wrong type\"}"),
+        ] {
+            let mut candidate = before.clone();
+            candidate.insert("preset".into(), "\"Unapplied new preset\"".into());
+            candidate.insert(field.into(), wrong_type.into());
+            let error = params.validate_fields(&candidate).expect_err(field);
+            let base = field
+                .trim_start_matches("part_")
+                .trim_end_matches("_1")
+                .trim_end_matches("_2");
+            assert!(error.contains(base), "error must identify {field}: {error}");
+            assert_eq!(
+                params.serialize_fields(),
+                before,
+                "preflight mutated {field}"
+            );
+        }
+    }
+}

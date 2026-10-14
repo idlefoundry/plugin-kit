@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 # The vendored crates are taken by the plug-ins from this repository by name (a git
 # dependency at a commit), not built as members here.
-exclude = ["third_party"]
+exclude = ["third_party", "third_party/cpal"]
 
 [workspace.package]
 version = "0.3.1"

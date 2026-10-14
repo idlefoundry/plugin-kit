@@ -1063,7 +1063,10 @@ fn control(
                                     .config = config.clone();
                                 handle.metrics.save_requested.store(true, Ordering::Release);
                             }
-                            if config.output.is_none() && devices.default_output != active_output {
+                            if !need_apply
+                                && config.output.is_none()
+                                && devices.default_output != active_output
+                            {
                                 candidate = config.clone();
                                 need_apply = true;
                             } else if negotiate(&config, &devices).is_err() {

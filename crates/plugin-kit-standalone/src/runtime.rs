@@ -1,5 +1,5 @@
 use crate::devices::{describe, enumerate};
-use crate::routing::{CAPTURE_CAPACITY, InputResampler, MIDI_PER_BLOCK, MidiRouter};
+use crate::routing::{CAPTURE_CAPACITY, InputResampler, MIDI_PER_BLOCK, MidiRouter, pack_frame};
 use crate::{
     AppHandle, AppOptions, AudioBlock, AudioProcessor, Command, Config, Devices, MidiEvent,
     MidiQueue, Negotiated, Phase, ProcessConfig, SessionFile, SessionState, Snapshot, load_session,
@@ -8,7 +8,10 @@ use crate::{
 use cpal::Sample;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{Receiver, Sender, bounded};
-use crossbeam_queue::ArrayQueue;
+use plugin_kit_queue::{AtomicQueue, QueuePush};
+use std::fs::{File, OpenOptions};
+use std::hash::{Hash, Hasher};
+use std::io::Read;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -23,6 +26,7 @@ pub(crate) struct Metrics {
     failed: AtomicBool,
     shutdown: AtomicBool,
     ready: AtomicBool,
+    pub(crate) save_requested: AtomicBool,
 }
 impl Metrics {
     pub(crate) fn fill(&self, s: &mut Snapshot) {
@@ -36,7 +40,7 @@ impl Metrics {
 pub struct HostRuntime {
     handle: Arc<AppHandle>,
     worker: Option<JoinHandle<()>>,
-    finished: Receiver<()>,
+    finished: Receiver<Result<(), String>>,
     ready: Receiver<()>,
 }
 impl std::fmt::Debug for HostRuntime {
@@ -67,16 +71,22 @@ impl HostRuntime {
         }
         self.handle.metrics.shutdown.store(true, Ordering::Release);
         let _ = self.handle.commands.try_send(Command::Shutdown);
-        if self.finished.recv_timeout(Duration::from_secs(2)).is_err() {
-            self.worker.take();
-            return Err("Audio driver did not finish shutdown within two seconds.".into());
-        }
+        let result = match self.finished.recv_timeout(Duration::from_secs(2)) {
+            Ok(result) => result,
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                self.worker.take();
+                return Err("Standalone shutdown did not finish within two seconds; a driver or session operation is still waiting.".into());
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                Err("Standalone control thread terminated unexpectedly.".into())
+            }
+        };
         if let Some(worker) = self.worker.take() {
             worker
                 .join()
                 .map_err(|_| "Standalone control thread failed".to_string())?;
         }
-        Ok(())
+        result
     }
 }
 impl Drop for HostRuntime {
@@ -90,6 +100,16 @@ pub fn spawn(
     state: Option<Arc<dyn SessionState>>,
     options: AppOptions,
 ) -> Result<HostRuntime, String> {
+    std::fs::create_dir_all(&options.state_dir)
+        .map_err(|e| format!("Unable to open standalone session directory: {e}"))?;
+    let instance_lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(options.state_dir.join("instance.lock"))
+        .map_err(|e| format!("Unable to lock standalone session: {e}"))?;
+    instance_lock.try_lock().map_err(|e|format!("Another standalone instance is using this session directory (or the session cannot be locked): {e}"))?;
     let (tx, rx) = bounded(32);
     let (finished_tx, finished) = bounded(1);
     let (ready_tx, ready) = bounded(1);
@@ -114,8 +134,9 @@ pub fn spawn(
     let worker = std::thread::Builder::new()
         .name(format!("{} standalone", options.app_id))
         .spawn(move || {
-            control(processor, state, options, control_handle, rx, ready_tx);
-            let _ = finished_tx.try_send(());
+            let result = control(processor, state, options, control_handle, rx, ready_tx);
+            drop(instance_lock);
+            let _ = finished_tx.try_send(result);
         })
         .map_err(|e| e.to_string())?;
     Ok(HostRuntime {
@@ -158,6 +179,7 @@ struct Callback {
     input_left: Vec<f32>,
     input_right: Vec<f32>,
     events: [MidiEvent; MIDI_PER_BLOCK],
+    pending_releases: u64,
     channels: usize,
     selection: [usize; 2],
 }
@@ -194,14 +216,29 @@ impl Callback {
                 self.router.clear();
             }
             let mut count = 0;
+            self.pending_releases |= self.midi.take_releases();
+            if self.pending_releases != 0 {
+                let source = self.pending_releases.trailing_zeros() as u16 + 1;
+                let (emitted, done) = self.router.release_source_into(source, &mut self.events);
+                count = emitted;
+                if done {
+                    self.pending_releases &= !(1u64 << (source - 1));
+                }
+            }
             for _ in 0..MIDI_PER_BLOCK {
-                let Some(event) = self.midi.pop() else {
+                if self.events.len() - count < 128 {
+                    break;
+                }
+                let Some((event, valid)) = self.midi.pop_raw() else {
                     break;
                 };
-                if let Some(event) = self.router.route(event) {
-                    self.events[count] = event;
-                    count += 1;
+                if !valid {
+                    continue;
                 }
+                if event.source != 0 && self.pending_releases & (1u64 << (event.source - 1)) != 0 {
+                    continue;
+                }
+                count += self.router.route_into(event, &mut self.events[count..]);
             }
             if let Some(processor) = self.owner.processor.as_mut() {
                 processor.process(AudioBlock {
@@ -276,12 +313,35 @@ fn stream_config(
             .map_err(|e| e.to_string())?
             .collect()
     };
+    let format = choose_format(ranges, channels, rate, frames)?;
+    Ok((
+        cpal::StreamConfig {
+            channels,
+            sample_rate: cpal::SampleRate(rate),
+            buffer_size: cpal::BufferSize::Fixed(frames),
+        },
+        format,
+    ))
+}
+
+fn choose_format(
+    ranges: Vec<cpal::SupportedStreamConfigRange>,
+    channels: u16,
+    rate: u32,
+    frames: u32,
+) -> Result<cpal::SampleFormat, String> {
     let range = ranges
         .into_iter()
         .filter(|c| {
             c.channels() == channels
                 && c.min_sample_rate().0 <= rate
                 && rate <= c.max_sample_rate().0
+                && match c.buffer_size() {
+                    cpal::SupportedBufferSize::Range { min, max } => {
+                        *min <= frames && frames <= *max
+                    }
+                    cpal::SupportedBufferSize::Unknown => true,
+                }
         })
         .min_by_key(|c| {
             if c.sample_format() == cpal::SampleFormat::F32 {
@@ -291,20 +351,13 @@ fn stream_config(
             }
         })
         .ok_or("Device no longer supports selected stream configuration")?;
-    Ok((
-        cpal::StreamConfig {
-            channels,
-            sample_rate: cpal::SampleRate(rate),
-            buffer_size: cpal::BufferSize::Fixed(frames),
-        },
-        range.sample_format(),
-    ))
+    Ok(range.sample_format())
 }
 
 fn build_input<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    queue: Arc<ArrayQueue<[f32; 2]>>,
+    queue: Arc<AtomicQueue>,
     selected: [usize; 2],
     metrics: Arc<Metrics>,
 ) -> Result<cpal::Stream, String>
@@ -323,9 +376,10 @@ where
                         let v = f32::from_sample(v);
                         if v.is_finite() { v } else { 0.0 }
                     };
-                    if queue
-                        .push([finite(frame[selected[0]]), finite(frame[selected[1]])])
-                        .is_err()
+                    if queue.force_push(pack_frame([
+                        finite(frame[selected[0]]),
+                        finite(frame[selected[1]]),
+                    ])) != QueuePush::Inserted
                     {
                         metrics.input_overflows.fetch_add(1, Ordering::Relaxed);
                     }
@@ -397,13 +451,14 @@ fn start(
         Err(e) => return Err((e, Some(processor))),
     };
     let max = config.buffer_frames as usize;
+    let reset_scope = processor.midi_reset_scope();
     if let Err(e) = processor.prepare(ProcessConfig {
         sample_rate: config.sample_rate as f32,
         max_buffer_frames: max,
     }) {
         return Err((e, Some(processor)));
     }
-    let input_queue = Arc::new(ArrayQueue::new(CAPTURE_CAPACITY));
+    let input_queue = Arc::new(AtomicQueue::new(CAPTURE_CAPACITY));
     let mut input_stream = None;
     if let Some(input) = &config.input {
         let result: Result<cpal::Stream, String> = (|| {
@@ -424,7 +479,6 @@ fn start(
                 config.config.input_channels.map(usize::from),
                 Arc::clone(&handle.metrics)
             )?;
-            stream.play().map_err(|e| e.to_string())?;
             Ok(stream)
         })();
         match result {
@@ -445,7 +499,7 @@ fn start(
             returned: returned_tx,
         },
         midi: Arc::clone(&handle.midi),
-        router: MidiRouter::new(config.config.midi_channel),
+        router: MidiRouter::with_scope(config.config.midi_channel, reset_scope),
         input: InputResampler::new(input_queue, config.input.is_some(), max),
         metrics: Arc::clone(&handle.metrics),
         left: vec![0.0; max],
@@ -457,6 +511,7 @@ fn start(
             data: [0; 3],
             len: 0,
         }; MIDI_PER_BLOCK],
+        pending_releases: 0,
         channels: usize::from(config.output_stream_channels),
         selection: config.config.output_channels.map(usize::from),
     };
@@ -466,6 +521,16 @@ fn start(
             Err(e) => return Err((e, returned_rx.recv_timeout(Duration::from_secs(2)).ok())),
         };
     handle.metrics.failed.store(false, Ordering::Release);
+    if let Some(input) = &input_stream
+        && let Err(e) = input.play()
+    {
+        drop(output_stream);
+        drop(input_stream);
+        return Err((
+            format!("External input could not start: {e}"),
+            returned_rx.recv_timeout(Duration::from_secs(2)).ok(),
+        ));
+    }
     if let Err(e) = output_stream.play() {
         drop(output_stream);
         return Err((
@@ -488,14 +553,49 @@ fn start(
     })
 }
 
+struct MidiBinding {
+    name: String,
+    source: u16,
+    _connection: midir::MidiInputConnection<()>,
+}
+
 fn connect_midi(
     config: &Config,
     app_id: &str,
     handle: &AppHandle,
-) -> (Vec<midir::MidiInputConnection<()>>, Vec<String>) {
+) -> (Vec<MidiBinding>, Vec<String>) {
     let mut connections = Vec::new();
+    let warnings = reconcile_midi(config, app_id, handle, &mut connections);
+    (connections, warnings)
+}
+
+fn reconcile_midi(
+    config: &Config,
+    app_id: &str,
+    handle: &AppHandle,
+    connections: &mut Vec<MidiBinding>,
+) -> Vec<String> {
     let mut warnings = Vec::new();
+    let inventory = handle.snapshot().devices.midi_inputs;
+    for index in (0..connections.len()).rev() {
+        let binding = &connections[index];
+        if !config.midi_inputs.contains(&binding.name)
+            || inventory
+                .iter()
+                .filter(|name| *name == &binding.name)
+                .count()
+                != 1
+        {
+            let removed = connections.remove(index);
+            let source = removed.source;
+            drop(removed);
+            handle.midi.release_source(source);
+        }
+    }
     for (index, name) in config.midi_inputs.iter().enumerate().take(64) {
+        if connections.iter().any(|binding| binding.name == *name) {
+            continue;
+        }
         let result = (|| {
             let mut input = midir::MidiInput::new(app_id).map_err(|e| e.to_string())?;
             input.ignore(midir::Ignore::All);
@@ -530,27 +630,91 @@ fn connect_midi(
                 .map_err(|e| e.to_string())
         })();
         match result {
-            Ok(connection) => connections.push(connection),
+            Ok(connection) => connections.push(MidiBinding {
+                name: name.clone(),
+                source: index as u16 + 1,
+                _connection: connection,
+            }),
             Err(error) => warnings.push(error),
         }
     }
-    (connections, warnings)
+    warnings
+}
+
+#[derive(PartialEq, Eq)]
+struct FileFingerprint {
+    len: u64,
+    hash: u64,
+}
+struct PreservedSession {
+    fingerprint: Option<FileFingerprint>,
+}
+fn fingerprint(path: &std::path::Path) -> Result<Option<FileFingerprint>, String> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+    let len = file.metadata().map_err(|e| e.to_string())?.len();
+    let mut bytes = Vec::new();
+    file.take(8 * 1024 * 1024)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hash);
+    Ok(Some(FileFingerprint {
+        len,
+        hash: hash.finish(),
+    }))
+}
+impl PreservedSession {
+    fn capture(options: &AppOptions) -> Self {
+        Self {
+            fingerprint: fingerprint(&options.state_dir.join("session.json"))
+                .ok()
+                .flatten(),
+        }
+    }
 }
 
 fn store(
     options: &AppOptions,
     state: Option<&Arc<dyn SessionState>>,
     config: &Config,
-    preserve_bad: bool,
+    preserved: &mut Option<PreservedSession>,
 ) -> Result<(), String> {
-    if preserve_bad {
-        return Err("The original unreadable session is preserved. Move it aside before saving a new session.".into());
+    if let Some(original) = preserved {
+        let current = fingerprint(&options.state_dir.join("session.json"))?;
+        if current.is_none() {
+            *preserved = None;
+        } else if current == original.fingerprint {
+            return Err("The original unreadable session is preserved. Move it aside before saving a new session.".into());
+        } else {
+            return Err("A different file now occupies the preserved session path. Move it aside before saving a new session.".into());
+        }
     }
     let bytes = state.map(|s| s.save()).transpose()?.unwrap_or_default();
     save_session(
         &options.state_dir.join("session.json"),
         &SessionFile::new(options.app_id.clone(), config.clone(), bytes),
     )
+}
+
+fn report_store(handle: &AppHandle, result: &Result<(), String>) {
+    let mut snapshot = handle
+        .snapshot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match result {
+        Err(error) => snapshot.warning = Some(error.clone()),
+        Ok(()) => {
+            if snapshot.warning.as_ref().is_some_and(|warning| {
+                warning.to_lowercase().contains("session") && warning.contains("preserved")
+            }) {
+                snapshot.warning = None;
+            }
+        }
+    }
 }
 
 struct Transition<T> {
@@ -637,16 +801,16 @@ fn control(
     handle: Arc<AppHandle>,
     commands: Receiver<Command>,
     ready: Sender<()>,
-) {
+) -> Result<(), String> {
     let mut config = Config::initial();
-    let mut preserve_bad = false;
+    let mut preserve_bad = None;
     match load_session(&options.state_dir.join("session.json"), &options.app_id) {
         Ok(Some(session)) => {
             config = session.config;
             if let Some(state) = &state
                 && let Err(e) = state.restore(&session.plugin_state)
             {
-                preserve_bad = true;
+                preserve_bad = Some(PreservedSession::capture(&options));
                 handle
                     .snapshot
                     .lock()
@@ -656,7 +820,7 @@ fn control(
         }
         Ok(None) => {}
         Err(e) => {
-            preserve_bad = true;
+            preserve_bad = Some(PreservedSession::capture(&options));
             handle
                 .snapshot
                 .lock()
@@ -725,18 +889,7 @@ fn control(
                 last_poll = Instant::now() - Duration::from_secs(2);
             }
             Some(Command::Save) => {
-                if let Err(e) = store(
-                    &options,
-                    state.as_ref(),
-                    successful.as_ref().unwrap_or(&config),
-                    preserve_bad,
-                ) {
-                    handle
-                        .snapshot
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .warning = Some(e);
-                }
+                handle.metrics.save_requested.store(true, Ordering::Release);
             }
             Some(Command::Restore(bytes)) => {
                 handle.midi.panic();
@@ -788,11 +941,8 @@ fn control(
                                 handle.metrics.failed.store(true, Ordering::Release);
                             }
                             // MIDI port lists may change without audio failure.
-                            handle.midi.panic();
-                            midi.clear();
-                            let (connections, warnings) =
-                                connect_midi(&config, &options.app_id, &handle);
-                            midi = connections;
+                            let warnings =
+                                reconcile_midi(&config, &options.app_id, &handle, &mut midi);
                             if !warnings.is_empty() {
                                 handle
                                     .snapshot
@@ -880,14 +1030,11 @@ fn control(
                                 snapshot.warning = Some(warnings.join(" "));
                             }
                         }
-                        if result.accepted
-                            && let Err(e) = store(&options, state.as_ref(), &config, preserve_bad)
-                        {
-                            handle
-                                .snapshot
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .warning = Some(e);
+                        if result.accepted {
+                            report_store(
+                                &handle,
+                                &store(&options, state.as_ref(), &config, &mut preserve_bad),
+                            );
                         }
                     } else {
                         handle.metrics.sample_rate.store(0, Ordering::Relaxed);
@@ -907,45 +1054,48 @@ fn control(
                 );
             }
         }
-        if last_save.elapsed() >= Duration::from_secs(5) {
+        if last_save.elapsed() >= Duration::from_secs(5)
+            || (handle.metrics.save_requested.load(Ordering::Acquire)
+                && last_save.elapsed() >= Duration::from_millis(250))
+        {
             last_save = Instant::now();
-            if let Err(e) = store(
+            handle
+                .metrics
+                .save_requested
+                .store(false, Ordering::Release);
+            let result = store(
                 &options,
                 state.as_ref(),
                 successful.as_ref().unwrap_or(&config),
-                preserve_bad,
-            ) {
-                handle
-                    .snapshot
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .warning = Some(e);
-            }
+                &mut preserve_bad,
+            );
+            report_store(&handle, &result);
         }
     }
     handle.midi.panic();
     midi.clear();
-    if let Some(stream) = active
-        && let Ok(mut p) = stream.stop()
-    {
-        p.deactivate();
+    let mut shutdown_error = None;
+    if let Some(stream) = active {
+        match stream.stop() {
+            Ok(mut p) => p.deactivate(),
+            Err(e) => shutdown_error = Some(e),
+        }
     }
     if let Some(mut p) = processor {
         p.deactivate();
     }
-    if let Err(e) = store(
+    let saved = store(
         &options,
         state.as_ref(),
         successful.as_ref().unwrap_or(&config),
-        preserve_bad,
-    ) {
-        handle
-            .snapshot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .warning = Some(e);
+        &mut preserve_bad,
+    );
+    report_store(&handle, &saved);
+    if let Err(error) = saved {
+        shutdown_error = Some(error);
     }
-    set_status(&handle, Phase::Stopped, None);
+    set_status(&handle, Phase::Stopped, shutdown_error.clone());
+    shutdown_error.map_or(Ok(()), Err)
 }
 
 #[cfg(test)]
@@ -986,6 +1136,34 @@ mod tests {
         assert!(!result.accepted);
         assert_eq!(result.config.expect("rollback").sample_rate, 48000);
         assert!(result.error.expect("error").contains("Device busy"));
+    }
+    #[test]
+    fn stream_format_selection_respects_the_negotiated_buffer_range() {
+        let range = |format, min, max| {
+            cpal::SupportedStreamConfigRange::new(
+                2,
+                cpal::SampleRate(48000),
+                cpal::SampleRate(48000),
+                cpal::SupportedBufferSize::Range { min, max },
+                format,
+            )
+        };
+        assert_eq!(
+            choose_format(
+                vec![
+                    range(cpal::SampleFormat::F32, 32, 64),
+                    range(cpal::SampleFormat::I16, 128, 512)
+                ],
+                2,
+                48000,
+                256
+            )
+            .expect("supported range"),
+            cpal::SampleFormat::I16
+        );
+        assert!(
+            choose_format(vec![range(cpal::SampleFormat::F32, 32, 64)], 2, 48000, 256).is_err()
+        );
     }
     #[test]
     fn unavailable_rollback_retains_processor_for_later_recovery() {
@@ -1058,7 +1236,7 @@ mod tests {
             },
             midi: Arc::new(MidiQueue::new()),
             router: MidiRouter::new(None),
-            input: InputResampler::new(Arc::new(ArrayQueue::new(8)), false, 3),
+            input: InputResampler::new(Arc::new(AtomicQueue::new(8)), false, 3),
             metrics: Arc::clone(&metrics),
             left: vec![0.0; 3],
             right: vec![0.0; 3],
@@ -1069,6 +1247,7 @@ mod tests {
                 data: [0; 3],
                 len: 0,
             }; MIDI_PER_BLOCK],
+            pending_releases: 0,
             channels: 4,
             selection: [2, 3],
         };
@@ -1147,7 +1326,10 @@ mod tests {
             handle.snapshot().error.as_deref(),
             Some("Processor failed; select another preset and Apply.")
         );
-        runtime.shutdown().expect("shutdown");
+        assert!(
+            runtime.shutdown().is_err(),
+            "preserving the original prevented final session save"
+        );
         assert_eq!(std::fs::read(&path).expect("preserved"), b"bad session");
         assert!(
             handle
@@ -1156,5 +1338,80 @@ mod tests {
                 .expect("warning")
                 .contains("preserved")
         );
+    }
+    #[test]
+    fn moving_bad_session_aside_resumes_saves_and_same_directory_instances_are_refused() {
+        let dir = tempfile::tempdir().expect("temp");
+        let path = dir.path().join("session.json");
+        std::fs::write(&path, b"bad original").expect("bad");
+        let options = AppOptions {
+            app_id: "Test".into(),
+            state_dir: dir.path().into(),
+            device_access: false,
+        };
+        let mut runtime = spawn(Box::new(Fake), None, options.clone()).expect("first");
+        runtime.wait_ready(Duration::from_secs(1)).expect("ready");
+        assert!(
+            spawn(Box::new(Fake), None, options.clone()).is_err(),
+            "second instance cannot clobber this session"
+        );
+        std::fs::rename(&path, dir.path().join("session.bad.json")).expect("move aside");
+        for _ in 0..1024 {
+            runtime.handle().save().expect("coalesced save");
+        }
+        runtime.shutdown().expect("close saves now resume");
+        assert!(
+            runtime.handle().snapshot().warning.is_none(),
+            "stale preservation warning is cleared"
+        );
+        assert!(
+            load_session(&path, "Test")
+                .expect("valid saved session")
+                .is_some()
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("session.bad.json")).expect("preserved"),
+            b"bad original"
+        );
+        let mut next = spawn(Box::new(Fake), None, options).expect("lock released");
+        next.shutdown().expect("next shutdown");
+    }
+    #[test]
+    fn final_save_errors_are_returned_and_replaced_bad_files_are_never_overwritten() {
+        struct BadSave;
+        impl SessionState for BadSave {
+            fn save(&self) -> Result<Vec<u8>, String> {
+                Err("save denied by test".into())
+            }
+            fn restore(&self, _: &[u8]) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        let dir = tempfile::tempdir().expect("temp");
+        let options = AppOptions {
+            app_id: "Test".into(),
+            state_dir: dir.path().into(),
+            device_access: false,
+        };
+        let mut runtime =
+            spawn(Box::new(Fake), Some(Arc::new(BadSave)), options.clone()).expect("spawn");
+        assert!(
+            runtime
+                .shutdown()
+                .expect_err("save failure returned")
+                .contains("save denied by test")
+        );
+        let path = dir.path().join("session.json");
+        std::fs::write(&path, b"original bad").expect("bad original");
+        let mut runtime = spawn(Box::new(Fake), None, options).expect("spawn");
+        runtime.wait_ready(Duration::from_secs(1)).expect("ready");
+        std::fs::write(&path, b"different bad").expect("changed file");
+        assert!(
+            runtime
+                .shutdown()
+                .expect_err("new file preserved")
+                .contains("different file")
+        );
+        assert_eq!(std::fs::read(&path).expect("preserved"), b"different bad");
     }
 }

@@ -1,7 +1,7 @@
-use crate::MidiEvent;
-use crossbeam_queue::ArrayQueue;
+use crate::{MidiEvent, MidiResetScope};
+use plugin_kit_queue::AtomicQueue;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 pub const MIDI_CAPACITY: usize = 2048;
 pub(crate) const MIDI_PER_BLOCK: usize = 256;
@@ -11,10 +11,11 @@ pub(crate) const CAPTURE_CAPACITY: usize = 65536;
 /// correction responds to fill error, capped at +/-1%; linear interpolation
 /// needs two lookahead frames and preserves exact samples at ratio one.
 pub(crate) struct InputResampler {
-    queue: Arc<ArrayQueue<[f32; 2]>>,
+    queue: Arc<AtomicQueue>,
     enabled: bool,
     prepared_frames: usize,
     primed: bool,
+    purging: bool,
     current: [f32; 2],
     next: [f32; 2],
     phase: f64,
@@ -22,16 +23,13 @@ pub(crate) struct InputResampler {
 }
 
 impl InputResampler {
-    pub(crate) fn new(
-        queue: Arc<ArrayQueue<[f32; 2]>>,
-        enabled: bool,
-        prepared_frames: usize,
-    ) -> Self {
+    pub(crate) fn new(queue: Arc<AtomicQueue>, enabled: bool, prepared_frames: usize) -> Self {
         Self {
             queue,
             enabled,
             prepared_frames,
             primed: false,
+            purging: false,
             current: [0.0; 2],
             next: [0.0; 2],
             phase: 0.0,
@@ -43,20 +41,42 @@ impl InputResampler {
             return;
         }
         let target = (self.prepared_frames.max(frames) * 2).clamp(4, self.queue.capacity() / 2);
+        if self.queue.len() > target.saturating_mul(4) {
+            self.primed = false;
+            self.purging = true;
+        }
         if !self.primed {
+            if self.purging {
+                // Recover towards recent input without draining 65536 frames
+                // in one callback. Further bounded progress happens per output
+                // frame while this callback's external input remains silent.
+                let budget = frames.saturating_mul(4).min(4096);
+                for _ in 0..budget {
+                    if self.queue.len() <= target {
+                        break;
+                    }
+                    if self.queue.try_pop().is_none() {
+                        break;
+                    }
+                }
+                if self.queue.len() > target {
+                    return;
+                }
+            }
             if self.queue.len() < target {
                 return;
             }
-            let Some(current) = self.queue.pop() else {
+            let Some(current) = self.queue.try_pop().map(unpack_frame) else {
                 return;
             };
-            let Some(next) = self.queue.pop() else {
+            let Some(next) = self.queue.try_pop().map(unpack_frame) else {
                 return;
             };
             self.current = current;
             self.next = next;
             self.phase = 0.0;
             self.primed = true;
+            self.purging = false;
         }
         let fill = self.queue.len() + 2;
         self.ratio =
@@ -65,6 +85,9 @@ impl InputResampler {
     /// The boolean marks a genuine underflow after priming, not startup silence.
     pub(crate) fn sample(&mut self) -> ([f32; 2], bool) {
         if !self.enabled || !self.primed {
+            if self.enabled && self.purging {
+                let _ = self.queue.try_pop();
+            }
             return ([0.0; 2], false);
         }
         let output = if self.phase == 0.0 {
@@ -83,7 +106,7 @@ impl InputResampler {
             }
             self.phase -= 1.0;
             self.current = self.next;
-            let Some(next) = self.queue.pop() else {
+            let Some(next) = self.queue.try_pop().map(unpack_frame) else {
                 self.primed = false;
                 self.current = [0.0; 2];
                 self.next = [0.0; 2];
@@ -98,9 +121,42 @@ impl InputResampler {
 
 #[derive(Debug)]
 pub struct MidiQueue {
-    queue: ArrayQueue<MidiEvent>,
+    queue: AtomicQueue,
     panic: AtomicBool,
     overflows: AtomicU64,
+    releases: AtomicU64,
+    epochs: [AtomicU32; 65],
+}
+pub(crate) fn pack_frame(frame: [f32; 2]) -> u64 {
+    u64::from(frame[0].to_bits()) | (u64::from(frame[1].to_bits()) << 32)
+}
+fn unpack_frame(frame: u64) -> [f32; 2] {
+    [
+        f32::from_bits(frame as u32),
+        f32::from_bits((frame >> 32) as u32),
+    ]
+}
+fn pack_midi(event: MidiEvent, epoch: u32) -> u64 {
+    u64::from(event.data[0] & 0x7f)
+        | (u64::from(event.data[1]) << 7)
+        | (u64::from(event.data[2] & 0x7f) << 14)
+        | (u64::from(event.len) << 21)
+        | (u64::from(event.source) << 23)
+        | (u64::from(epoch) << 30)
+}
+fn unpack_midi(value: u64) -> (MidiEvent, u32) {
+    (
+        MidiEvent {
+            source: ((value >> 23) & 0x7f) as u16,
+            data: [
+                (value as u8 & 0x7f) | 0x80,
+                ((value >> 7) & 0x7f) as u8,
+                ((value >> 14) & 0x7f) as u8,
+            ],
+            len: ((value >> 21) & 3) as u8,
+        },
+        (value >> 30) as u32,
+    )
 }
 
 impl Default for MidiQueue {
@@ -112,9 +168,11 @@ impl Default for MidiQueue {
 impl MidiQueue {
     pub fn new() -> Self {
         Self {
-            queue: ArrayQueue::new(MIDI_CAPACITY),
+            queue: AtomicQueue::new(MIDI_CAPACITY),
             panic: AtomicBool::new(false),
             overflows: AtomicU64::new(0),
+            releases: AtomicU64::new(0),
+            epochs: std::array::from_fn(|_| AtomicU32::new(0)),
         }
     }
     pub fn push(&self, event: MidiEvent) -> bool {
@@ -136,7 +194,11 @@ impl MidiQueue {
         if event.len != expected {
             return false;
         }
-        if self.queue.push(event).is_err() {
+        let queued = pack_midi(
+            event,
+            self.epochs[usize::from(event.source)].load(Ordering::Acquire),
+        );
+        if !self.queue.try_push(queued) {
             self.overflows.fetch_add(1, Ordering::Relaxed);
             self.panic.store(true, Ordering::Release);
             false
@@ -150,56 +212,167 @@ impl MidiQueue {
     pub fn overflows(&self) -> u64 {
         self.overflows.load(Ordering::Relaxed)
     }
+    /// Called after the connection is closed. It invalidates already queued
+    /// events and requests bounded, source-specific releases on the callback.
+    pub fn release_source(&self, source: u16) {
+        if !(1..=64).contains(&source) {
+            return;
+        }
+        self.epochs[usize::from(source)].fetch_add(1, Ordering::AcqRel);
+        self.releases
+            .fetch_or(1u64 << (source - 1), Ordering::Release);
+    }
+    pub(crate) fn take_releases(&self) -> u64 {
+        self.releases.swap(0, Ordering::AcqRel)
+    }
     pub(crate) fn take_panic(&self) -> bool {
         if !self.panic.swap(false, Ordering::AcqRel) {
             return false;
         }
+        // A producer can be preempted after encoding but before publishing.
+        // Advance every source generation before draining, so that its eventual
+        // old note-on cannot restart a note after this emergency release.
+        for epoch in &self.epochs {
+            epoch.fetch_add(1, Ordering::AcqRel);
+        }
         // A fixed upper bound even while producers continue; stale queued note-ons
         // must not follow an emergency release.
         for _ in 0..MIDI_CAPACITY {
-            if self.queue.pop().is_none() {
+            if self.queue.try_pop().is_none() {
                 break;
             }
         }
         true
     }
-    pub(crate) fn pop(&self) -> Option<MidiEvent> {
-        self.queue.pop()
+    pub(crate) fn pop_raw(&self) -> Option<(MidiEvent, bool)> {
+        self.queue.try_pop().map(|queued| {
+            let (event, epoch) = unpack_midi(queued);
+            let valid = epoch == self.epochs[usize::from(event.source)].load(Ordering::Acquire);
+            (event, valid)
+        })
+    }
+    #[cfg(test)]
+    fn pop(&self) -> Option<MidiEvent> {
+        self.pop_raw()
+            .and_then(|(event, valid)| valid.then_some(event))
     }
 }
 
-/// One engine note is held while any selected device/channel or local source
-/// owns that pitch. Repeated note-ons from the same owner do not retrigger.
+/// Devices share ownership within one MIDI channel/pitch. Channels remain
+/// separate, and the final release retains the first emitted source identity.
 pub(crate) struct MidiRouter {
     held: Vec<bool>,
-    counts: [u16; 128],
-    output_channel: [u8; 128],
+    counts: Vec<u16>,
+    output_source: Vec<u16>,
     channel: Option<u8>,
+    reset_scope: MidiResetScope,
+    release_cursor: [usize; 65],
 }
 
 impl MidiRouter {
+    #[cfg(test)]
     pub(crate) fn new(channel: Option<u8>) -> Self {
+        Self::with_scope(channel, MidiResetScope::Channel)
+    }
+    pub(crate) fn with_scope(channel: Option<u8>, reset_scope: MidiResetScope) -> Self {
         Self {
             held: vec![false; 65 * 16 * 128],
-            counts: [0; 128],
-            output_channel: [0; 128],
+            counts: vec![0; 16 * 128],
+            output_source: vec![0; 16 * 128],
             channel,
+            reset_scope,
+            release_cursor: [0; 65],
         }
     }
     pub(crate) fn clear(&mut self) {
         self.held.fill(false);
         self.counts.fill(0);
     }
-    pub(crate) fn route(&mut self, mut event: MidiEvent) -> Option<MidiEvent> {
+    pub(crate) fn route_into(&mut self, event: MidiEvent, output: &mut [MidiEvent]) -> usize {
         let channel = event.data[0] & 15;
         if event.source != 0 && self.channel.is_some_and(|selected| selected != channel + 1) {
-            return None;
+            return 0;
         }
         let kind = event.data[0] & 0xf0;
         if kind == 0xb0 && matches!(event.data[1], 120 | 123) {
-            self.clear();
-            return Some(event);
+            if self.reset_scope == MidiResetScope::Global {
+                if output.is_empty() {
+                    return 0;
+                }
+                self.clear();
+                output[0] = event;
+                return 1;
+            }
+            // Maximum 128 releases; callers reserve this space before dequeue.
+            if output.len() < 128 {
+                return 0;
+            }
+            let mut emitted = 0;
+            for note in 0..128 {
+                let owner = (usize::from(event.source) * 16 + usize::from(channel)) * 128 + note;
+                let key = usize::from(channel) * 128 + note;
+                if !self.held[owner] {
+                    continue;
+                }
+                self.held[owner] = false;
+                self.counts[key] -= 1;
+                if self.counts[key] == 0 {
+                    output[emitted] = MidiEvent {
+                        source: self.output_source[key],
+                        data: [0x80 | channel, note as u8, 0],
+                        len: 3,
+                    };
+                    emitted += 1;
+                }
+            }
+            return emitted;
         }
+        if output.is_empty() {
+            return 0;
+        }
+        if let Some(event) = self.route_note(event) {
+            output[0] = event;
+            1
+        } else {
+            0
+        }
+    }
+    pub(crate) fn release_source_into(
+        &mut self,
+        source: u16,
+        output: &mut [MidiEvent],
+    ) -> (usize, bool) {
+        let index = usize::from(source);
+        let mut emitted = 0;
+        // At most 2048 ownership probes per source/block, with at most the
+        // caller's fixed event capacity emitted. Resume a large chord next block.
+        while self.release_cursor[index] < 16 * 128 && emitted < output.len() {
+            let key = self.release_cursor[index];
+            self.release_cursor[index] += 1;
+            let owner = index * 16 * 128 + key;
+            if !self.held[owner] {
+                continue;
+            }
+            self.held[owner] = false;
+            self.counts[key] -= 1;
+            if self.counts[key] == 0 {
+                output[emitted] = MidiEvent {
+                    source: self.output_source[key],
+                    data: [0x80 | (key / 128) as u8, (key % 128) as u8, 0],
+                    len: 3,
+                };
+                emitted += 1;
+            }
+        }
+        let done = self.release_cursor[index] == 16 * 128;
+        if done {
+            self.release_cursor[index] = 0;
+        }
+        (emitted, done)
+    }
+    fn route_note(&mut self, mut event: MidiEvent) -> Option<MidiEvent> {
+        let channel = event.data[0] & 15;
+        let kind = event.data[0] & 0xf0;
         if kind != 0x80 && kind != 0x90 {
             return Some(event);
         }
@@ -207,6 +380,7 @@ impl MidiRouter {
             return None;
         }
         let note = usize::from(event.data[1]);
+        let key = usize::from(channel) * 128 + note;
         let owner = (usize::from(event.source) * 16 + usize::from(channel)) * 128 + note;
         let on = kind == 0x90 && event.data[2] != 0;
         if on {
@@ -214,23 +388,30 @@ impl MidiRouter {
                 return None;
             }
             self.held[owner] = true;
-            self.counts[note] += 1;
-            if self.counts[note] > 1 {
+            self.counts[key] += 1;
+            if self.counts[key] > 1 {
                 return None;
             }
-            self.output_channel[note] = channel;
+            self.output_source[key] = event.source;
         } else {
             if !self.held[owner] {
                 return None;
             }
             self.held[owner] = false;
-            self.counts[note] -= 1;
-            if self.counts[note] != 0 {
+            self.counts[key] -= 1;
+            if self.counts[key] != 0 {
                 return None;
             }
-            event.data[0] = 0x80 | self.output_channel[note];
+            event.data[0] = 0x80 | channel;
+            event.source = self.output_source[key];
         }
         Some(event)
+    }
+    #[cfg(test)]
+    fn route(&mut self, event: MidiEvent) -> Option<MidiEvent> {
+        let mut output = [event; 128];
+        let count = self.route_into(event, &mut output);
+        (count != 0).then_some(output[0])
     }
 }
 
@@ -310,10 +491,72 @@ mod tests {
         assert!(r.route(event(1, 0, true)).is_some());
         assert!(r.route(event(1, 0, true)).is_none());
         assert!(r.route(event(2, 0, true)).is_none());
-        assert!(r.route(event(0, 1, true)).is_none());
+        assert!(r.route(event(0, 1, true)).is_some());
         assert!(r.route(event(1, 0, false)).is_none());
-        assert!(r.route(event(2, 0, false)).is_none());
+        assert_eq!(r.route(event(2, 0, false)), Some(event(1, 0, false)));
         assert!(r.route(event(0, 1, false)).is_some());
+    }
+    #[test]
+    fn controller_release_isolated_to_source_channel_and_global_policy_is_explicit() {
+        for controller in [120, 123] {
+            let mut router = MidiRouter::new(None);
+            assert!(router.route(event(1, 0, true)).is_some());
+            assert!(router.route(event(2, 0, true)).is_none());
+            assert!(router.route(event(2, 1, true)).is_some());
+            let reset = MidiEvent {
+                source: 2,
+                data: [0xb0, controller, 0],
+                len: 3,
+            };
+            let mut output = [reset; 128];
+            assert_eq!(router.route_into(reset, &mut output), 0);
+            assert_eq!(router.route(event(1, 0, false)), Some(event(1, 0, false)));
+            assert_eq!(router.route(event(2, 1, false)), Some(event(2, 1, false)));
+            let mut global = MidiRouter::with_scope(None, MidiResetScope::Global);
+            global.route(event(1, 0, true));
+            global.route(event(2, 1, true));
+            assert_eq!(global.route(reset), Some(reset));
+            assert!(global.route(event(1, 0, false)).is_none());
+            assert!(global.route(event(2, 1, false)).is_none());
+        }
+    }
+    #[test]
+    fn unplug_releases_only_that_device_and_invalidates_queued_events() {
+        let queue = MidiQueue::new();
+        let mut router = MidiRouter::with_scope(None, MidiResetScope::Global);
+        router.route(event(1, 0, true));
+        router.route(event(2, 0, true));
+        router.route(event(3, 1, true));
+        assert!(queue.push(event(1, 0, true)));
+        queue.release_source(1);
+        assert_eq!(queue.take_releases(), 1);
+        assert!(!queue.pop_raw().expect("old event").1);
+        let mut output = [event(1, 0, false); 256];
+        assert_eq!(router.release_source_into(1, &mut output), (0, true));
+        assert_eq!(router.route(event(2, 0, false)), Some(event(1, 0, false)));
+        assert_eq!(router.route(event(3, 1, false)), Some(event(3, 1, false)));
+    }
+    #[test]
+    fn large_unplug_release_is_bounded_and_resumes_next_block() {
+        let mut router = MidiRouter::new(None);
+        for channel in 0..16 {
+            for note in 0..128 {
+                router.route(MidiEvent {
+                    source: 1,
+                    data: [0x90 | channel, note, 100],
+                    len: 3,
+                });
+            }
+        }
+        let mut output = [event(1, 0, false); 256];
+        let mut total = 0;
+        for block in 0..8 {
+            let (count, done) = router.release_source_into(1, &mut output);
+            assert_eq!(count, 256);
+            total += count;
+            assert_eq!(done, block == 7);
+        }
+        assert_eq!(total, 2048);
     }
     #[test]
     fn velocity_zero_and_channel_filter() {
@@ -338,26 +581,78 @@ mod tests {
         assert!(!q.take_panic());
     }
     #[test]
+    fn resumed_preempted_producer_cannot_publish_a_stale_note_after_panic() {
+        let queue = MidiQueue::new();
+        let delayed = pack_midi(event(1, 0, true), queue.epochs[1].load(Ordering::Acquire));
+        queue.panic();
+        assert!(queue.take_panic());
+        assert!(
+            queue.queue.try_push(delayed),
+            "producer resumes publication"
+        );
+        assert!(
+            !queue.pop_raw().expect("published packet").1,
+            "old encoded generation is rejected"
+        );
+        assert!(queue.push(event(1, 0, true)));
+        assert!(queue.pop_raw().expect("fresh packet").1);
+    }
+    #[test]
+    fn packed_midi_preserves_full_source_epoch_and_message_bits() {
+        for source in [0, 1, 64] {
+            for epoch in [0, 1, u32::MAX] {
+                for status in [0x80, 0xbf, 0xcf, 0xdf, 0xef] {
+                    let event = MidiEvent {
+                        source,
+                        data: [status, 127, 126],
+                        len: if matches!(status & 0xf0, 0xc0 | 0xd0) {
+                            2
+                        } else {
+                            3
+                        },
+                    };
+                    assert_eq!(unpack_midi(pack_midi(event, epoch)), (event, epoch));
+                }
+            }
+        }
+    }
+    #[test]
     fn concurrent_producers_do_not_overwrite_each_other() {
         let queue = std::sync::Arc::new(MidiQueue::new());
+        let accepted = std::sync::atomic::AtomicUsize::new(0);
         std::thread::scope(|scope| {
             for source in 1..=4 {
                 let q = std::sync::Arc::clone(&queue);
+                let accepted = &accepted;
                 scope.spawn(move || {
                     for _ in 0..512 {
-                        assert!(q.push(event(source, 0, true)));
+                        if q.push(event(source, 0, true)) {
+                            accepted.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                 });
             }
         });
         let mut counts = [0; 4];
-        for _ in 0..MIDI_CAPACITY {
+        for _ in 0..accepted.load(Ordering::Relaxed) {
             let event = queue.pop().expect("queued");
             counts[usize::from(event.source) - 1] += 1;
         }
-        assert_eq!(counts, [512; 4]);
-        assert_eq!(queue.overflows(), 0);
+        assert_eq!(
+            counts.iter().sum::<usize>(),
+            accepted.load(Ordering::Relaxed)
+        );
+        assert!(counts.iter().all(|count| *count <= 512));
+        assert_eq!(
+            queue.overflows() as usize + accepted.load(Ordering::Relaxed),
+            MIDI_CAPACITY
+        );
         assert!(queue.pop().is_none());
+        assert_eq!(
+            queue.take_panic(),
+            queue.overflows() != 0,
+            "a contended producer fails closed"
+        );
     }
     #[test]
     fn all_channel_counts_mapping_downmix_and_sanitization() {
@@ -409,7 +704,7 @@ mod tests {
     fn independent_capture_clocks_stay_bounded_for_sixty_seconds() {
         for period in [128, 256] {
             for ppm in [-500.0, 500.0] {
-                let queue = Arc::new(ArrayQueue::new(CAPTURE_CAPACITY));
+                let queue = Arc::new(AtomicQueue::new(CAPTURE_CAPACITY));
                 let mut input = InputResampler::new(Arc::clone(&queue), true, period);
                 let ratio = 1.0 + ppm / 1_000_000.0;
                 let mut pending = 0.0;
@@ -422,7 +717,7 @@ mod tests {
                     pending -= frames as f64;
                     for _ in 0..frames {
                         assert!(
-                            queue.push([0.5, -0.5]).is_ok(),
+                            queue.try_push(pack_frame([0.5, -0.5])),
                             "capture overflow {period}/{ppm}"
                         );
                     }
@@ -451,21 +746,17 @@ mod tests {
     }
     #[test]
     fn equal_clocks_copy_samples_exactly_and_disabled_input_is_silent() {
-        let queue = Arc::new(ArrayQueue::new(64));
+        let queue = Arc::new(AtomicQueue::new(64));
         let mut input = InputResampler::new(Arc::clone(&queue), true, 8);
         for sample in 0..16 {
-            queue
-                .push([sample as f32, -(sample as f32)])
-                .expect("input");
+            assert!(queue.try_push(pack_frame([sample as f32, -(sample as f32)])));
         }
         input.begin(8);
         for sample in 0..8 {
             assert_eq!(input.sample(), ([sample as f32, -(sample as f32)], false));
         }
         for sample in 16..24 {
-            queue
-                .push([sample as f32, -(sample as f32)])
-                .expect("input");
+            assert!(queue.try_push(pack_frame([sample as f32, -(sample as f32)])));
         }
         input.begin(8);
         for sample in 8..16 {
@@ -474,5 +765,48 @@ mod tests {
         let mut disabled = InputResampler::new(queue, false, 8);
         disabled.begin(8);
         assert_eq!(disabled.sample(), ([0.0; 2], false));
+    }
+    #[test]
+    fn delayed_start_and_overflow_discard_stale_capture_with_bounded_callback_work() {
+        let queue = Arc::new(AtomicQueue::new(CAPTURE_CAPACITY));
+        for sample in 1..=48000 {
+            assert!(queue.try_push(pack_frame([sample as f32, 0.0])));
+        }
+        let mut input = InputResampler::new(Arc::clone(&queue), true, 128);
+        let mut latest = 48000;
+        let mut heard = None;
+        for _ in 0..200 {
+            for _ in 0..128 {
+                latest += 1;
+                queue.force_push(pack_frame([latest as f32, 0.0]));
+            }
+            let before = queue.len();
+            input.begin(128);
+            assert!(before - queue.len() <= 514, "bounded prime purge");
+            for _ in 0..128 {
+                let (sample, underflow) = input.sample();
+                assert!(!underflow);
+                if sample[0] != 0.0 && heard.is_none() {
+                    heard = Some((sample[0], latest));
+                }
+            }
+            if heard.is_some() {
+                break;
+            }
+        }
+        let (sample, latest) = heard.expect("recent capture resumes");
+        assert!(
+            (latest as f32 - sample) < 512.0,
+            "old audio must not play first"
+        );
+        for sample in 0..CAPTURE_CAPACITY + 100 {
+            queue.force_push(pack_frame([sample as f32, 0.0]));
+        }
+        input.begin(128);
+        assert_eq!(
+            input.sample().0,
+            [0.0; 2],
+            "overflow recovery is silent until recent frames are primed"
+        );
     }
 }

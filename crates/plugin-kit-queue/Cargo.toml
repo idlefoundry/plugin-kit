@@ -1,0 +1,11 @@
+[package]
+name = "plugin-kit-queue"
+description = "Packed atomic queues with bounded operations for realtime instrument event bridges"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

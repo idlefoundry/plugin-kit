@@ -11,7 +11,7 @@ publish.workspace = true
 cpal = "=0.15.3"
 midir = "=0.9.1"
 crossbeam-channel = "0.5"
-crossbeam-queue = "0.3"
+plugin-kit-queue = { path = "../plugin-kit-queue" }
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

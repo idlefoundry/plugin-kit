@@ -480,3 +480,29 @@ support limits: CPAL's lack of stable OS identifiers, preserved malformed
 sessions, input adaptation quality/latency needing hardware verification, and
 bounded caller shutdown with OS-driver operations that cannot be forcibly
 terminated. Hardware and cross-OS acceptance remain unverified here.
+
+**Independent review corrections, 2026-10-13:** the first source router conflated
+channels and reported the final releaser's identity, and its controller clear
+could erase another device's ownership. Merge devices only within channel/pitch,
+retain the first emitted source, and give processors an explicit `Channel`/`Global`
+controller policy. CA-72 chooses Global to preserve its existing omni behavior;
+generic source/channel releases do not hard-mute an instrument's release tails.
+Lost MIDI devices have independent generation invalidation and bounded releases;
+surviving MIDI connections remain open.
+
+The final save's result now reaches `shutdown()`. A fingerprinted bad-file guard
+permits saving after the original is moved aside, while protecting a replacement
+file. A cross-platform file lock refuses a second instance using the same state
+directory. Saves coalesce. Sample-format choice checks the same buffer range as
+negotiation. Capture starts after output construction; bounded startup/overflow
+purging discards stale input before recent capture is played.
+
+Crossbeam's packed-queue predecessor could retry when a producer was preempted
+before publication. The shared `plugin-kit-queue` now uses atomic u64 slots,
+one-attempt producer/consumer claims and publication only after the complete
+payload is stored. It contains no unsafe code or retry loop. Failed MIDI claims
+request an emergency release; source generations prevent a paused producer's
+event from restarting a note afterward. There are 28 standalone tests and two
+queue tests, including these reproductions; strict Clippy and formatting pass.
+The separate CPAL CoreAudio retention/capability fixes are owned by the lead and
+must be integrated before claiming verified macOS stream lifecycle behavior.

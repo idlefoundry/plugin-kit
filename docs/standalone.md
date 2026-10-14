@@ -23,11 +23,19 @@ not create the editor or change the circuit: the instrument supplies an
    The audio callback never acquires the snapshot mutex.
 5. Send local playing events with `MidiEvent::source = 0` and call `panic()` for an
    emergency release. Hardware inputs receive independent identities 1–64. The
-   router keeps a note held while another input/channel still owns it. MIDI Learn
+   router merges devices within each channel/pitch and preserves the first emitted
+   source identity in the final release. MIDI channels remain separate. MIDI Learn
    sees physical CC channels unchanged. SysEx, system/clock messages and MIDI
    output are outside this instrument host's scope.
+   `AudioProcessor::midi_reset_scope()` defaults to `MidiResetScope::Channel`,
+   translating CC120/123 into source/channel note releases. An omni instrument
+   such as CA-72 explicitly chooses `Global` to preserve its global controllers.
+   Source-specific mode releases owned notes; it does not implement an instrument's
+   source-specific release-tail choke. Device unplug uses separate source releases
+   regardless of controller scope and invalidates its queued event generations.
 6. Close the editor and call `runtime.shutdown()`. The caller waits at most two
-   seconds and receives an error if the OS driver does not finish. Do not silently
+   seconds and receives an error if the OS driver does not finish or its final
+   session save fails. Do not silently
    discard that result in the application.
 
 ## Ownership and callback work
@@ -39,10 +47,14 @@ a stream fails. There is no shared mutable DSP cell, processor mutex or spinning
 audio lock. Processing splits unexpectedly large device callbacks into the
 prepared maximum block without growing any buffer.
 
-Input frames and MIDI use preallocated multi-producer queues. Processing drains
+Input frames and MIDI use `plugin-kit-queue`'s packed atomic slots. Producers try
+one gate acquisition, store the complete packet, then publish tail. Consumers try
+one head advance; they never spin while a preempted producer has not published.
+Contended MIDI producers fail closed and request emergency release. Processing drains
 at most 256 MIDI messages per block. Queue exhaustion requests a global emergency
 release and discards at most the 2048-message capacity before further processing.
-This avoids stranded notes when a note-off was dropped. Callback errors set
+Source generations advance before an emergency release so a preempted producer
+cannot publish a stale note afterward. This avoids stranded notes when a note-off was dropped. Callback errors set
 atomics only; device work and error display happen through control/UI snapshots.
 
 Selection uses hardware channel indices. Mono input duplicates one channel;
@@ -55,6 +67,10 @@ Windows' capture/render devices. A 65536-frame capture reservoir primes two devi
 periods before input is audible. Consumption adapts to its fill using linear
 interpolation, bounded to a 1% rate correction. Equal clocks copy samples exactly.
 This adds capture buffering latency; buffer duration is not a roundtrip estimate.
+Capture starts after output-stream construction. Startup/overflow backlog is
+discarded in bounded batches: at most `min(4 × callback frames, 4096)` during
+priming plus one frame per silent output frame. Recovery plays recent capture
+instead of reading old audio while slowly correcting a large backlog.
 
 ## Configuration, sessions and recovery
 
@@ -70,6 +86,7 @@ Device inventories refresh every two seconds. Selected identities must match one
 device exactly; absent or duplicate identities cannot silently select a different
 interface. Device loss releases notes, tears down the streams and keeps the
 editor alive. A changed inventory can retry an unambiguously reconnected device.
+MIDI inventory changes retain surviving connections and release only lost sources.
 Processor faults submitted through `stop` require explicit Apply before retry.
 
 The versioned `session.json` contains the app identity, last successful settings
@@ -78,6 +95,11 @@ replacement; Unix also syncs the directory. Saves occur after accepted changes,
 on request, every five seconds and at close. Malformed, unsupported or mismatched
 files remain untouched; saving stays disabled with a warning until the user moves
 that file aside. A failed candidate is never saved.
+The original file's fingerprint is checked again before saving. Moving it aside
+while the app runs resumes saves; a replacement file is preserved. Save requests
+coalesce behind a 250 ms gate. A `File::try_lock` on `instance.lock` makes one app
+instance own each state directory; another instance is refused before loading or
+writing that session. Different state directories remain independent.
 
 ## Support limits to retain in product documentation
 
@@ -107,12 +129,12 @@ that file aside. A failed candidate is never saved.
 On Linux, without opening audio or MIDI hardware:
 
 ```
-CARGO_BUILD_JOBS=4 nice -n 19 ionice -c 3 cargo test -p plugin-kit-standalone
-CARGO_BUILD_JOBS=4 nice -n 19 ionice -c 3 cargo clippy -p plugin-kit-standalone --all-targets -- -D warnings
-cargo fmt -p plugin-kit-standalone -- --check
+CARGO_BUILD_JOBS=4 nice -n 19 ionice -c 3 cargo test -p plugin-kit-queue -p plugin-kit-standalone
+CARGO_BUILD_JOBS=4 nice -n 19 ionice -c 3 cargo clippy -p plugin-kit-queue -p plugin-kit-standalone --all-targets -- -D warnings
+cargo fmt -p plugin-kit-queue -p plugin-kit-standalone -- --check
 ```
 
-Nineteen tests cover identity ambiguity/missing devices, capability negotiation,
+Twenty-eight standalone tests and two queue tests cover identity ambiguity/missing devices, capability negotiation,
 mono/multichannel routing, NaN/Inf input, overlapping source/channel ownership,
 velocity-zero note-offs, MIDI channel filtering, concurrent producers, overflow
 recovery, malformed/unsupported session preservation, interrupted/competing atomic
@@ -120,3 +142,7 @@ writes, failed apply/rollback/recovery, input denial preserving output, startup
 readiness, no-device shutdown and independent capture clocks. Variable-callback
 tests count allocations on the calling thread with MIDI traffic queued: the
 callback allocates zero times.
+Review regressions cover controller scope, accepted source identity, bounded large
+source releases, stale packets from preempted producers, moved/replaced bad session
+files, final-save errors, instance ownership, coalesced saves, range-specific sample
+format selection and recent-input recovery after a one-second capture backlog.

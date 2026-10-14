@@ -1028,6 +1028,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "plugin-kit-queue"
+version = "0.3.1"
+
+[[package]]
 name = "plugin-kit-rt"
 version = "0.3.1"
 dependencies = [
@@ -1048,8 +1052,8 @@ version = "0.3.1"
 dependencies = [
  "cpal",
  "crossbeam-channel",
- "crossbeam-queue",
  "midir",
+ "plugin-kit-queue",
  "serde",
  "serde_json",
  "tempfile",

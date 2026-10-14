@@ -9,6 +9,7 @@ pub use devices::{
     DeviceId, DeviceInfo, Devices, Negotiated, StreamCapability, negotiate, resolve_device,
 };
 pub use persistence::{SessionFile, load_session, save_session};
+pub use plugin_kit_queue::{AtomicQueue, QueuePush};
 pub use routing::{MidiQueue, route_output, sanitize_input};
 pub use runtime::{HostRuntime, spawn};
 
@@ -63,6 +64,12 @@ pub struct MidiEvent {
     pub len: u8,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MidiResetScope {
+    Channel,
+    Global,
+}
+
 pub struct AudioBlock<'a> {
     pub left: &'a mut [f32],
     pub right: &'a mut [f32],
@@ -84,6 +91,11 @@ impl std::fmt::Debug for AudioBlock<'_> {
 }
 
 pub trait AudioProcessor: Send + 'static {
+    /// An omni instrument may deliberately preserve its global controller-reset
+    /// behavior; generic instruments default to per-source/channel releases.
+    fn midi_reset_scope(&self) -> MidiResetScope {
+        MidiResetScope::Channel
+    }
     /// Control thread, with all previous streams destroyed.
     fn prepare(&mut self, config: ProcessConfig) -> Result<(), String>;
     /// Audio thread: no allocation, locks, filesystem, network or GUI work.
@@ -195,7 +207,15 @@ impl AppHandle {
         self.submit(Command::Refresh)
     }
     pub fn save(&self) -> Result<(), String> {
-        self.submit(Command::Save)
+        use std::sync::atomic::Ordering;
+        if self.metrics.save_requested.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+        if let Err(error) = self.submit(Command::Save) {
+            self.metrics.save_requested.store(false, Ordering::Release);
+            return Err(error);
+        }
+        Ok(())
     }
     pub fn restore_state(&self, bytes: Vec<u8>) -> Result<(), String> {
         self.submit(Command::Restore(bytes))

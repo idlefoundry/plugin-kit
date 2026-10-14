@@ -5,6 +5,9 @@ pub mod clap;
 pub mod state;
 pub(crate) mod util;
 
+#[cfg(feature = "standalone-production")]
+#[path = "wrapper/standalone/production.rs"]
+pub mod production;
 #[cfg(feature = "standalone")]
 pub mod standalone;
 #[cfg(feature = "vst3")]

@@ -265,11 +265,24 @@ pub fn derive_params(input: TokenStream) -> TokenStream {
         }
     };
 
-    let (serialize_fields_tokens, deserialize_fields_tokens) = {
+    let (serialize_fields_tokens, validate_fields_tokens, deserialize_fields_tokens) = {
         // Like with `param_map()`, we'll try to do the serialization for this struct and then
         // recursively call the child parameter structs. We don't know anything about the actual
         // field types, but because we can generate this function we can get type erasure for free
         // since we only need to worry about byte vectors.
+        let validate_fields_self_tokens: Vec<_> = persistent_fields
+            .iter()
+            .map(|PersistentField { field, key }| {
+                quote! {
+                    if let Some(data) = serialized.get(#key) {
+                        ::nih_plug::params::persist::PersistentField::validate(
+                            &self.#field,
+                            data,
+                        ).map_err(|error| format!("Invalid saved field '{}': {}", #key, error))?;
+                    }
+                }
+            })
+            .collect();
         let (serialize_fields_self_tokens, deserialize_fields_match_self_tokens): (Vec<_>, Vec<_>) =
             persistent_fields
                 .into_iter()
@@ -316,6 +329,47 @@ pub fn derive_params(input: TokenStream) -> TokenStream {
                 .unzip();
 
         // ID prefixes are also added for nested objects
+        let validate_fields_nested_tokens: Vec<_> = params
+            .iter()
+            .filter_map(|p| match p {
+                Param::Single { .. } => None,
+                Param::Nested(nested) => Some(nested),
+            })
+            .map(|nested| match nested {
+                NestedParams::Inline { field, .. } => quote! {
+                    self.#field.validate_fields(serialized)?;
+                },
+                NestedParams::Prefixed {
+                    field, id_prefix, ..
+                } => quote! {
+                    let prefix = format!("{}_", #id_prefix);
+                    let matching_fields = serialized
+                        .iter()
+                        .filter_map(|(key, value)| {
+                            let original_key = key.strip_prefix(&prefix)?;
+                            Some((original_key.to_owned(), value.to_owned()))
+                        })
+                        .collect();
+                    self.#field.validate_fields(&matching_fields)
+                        .map_err(|error| format!("In nested '{}': {}", #id_prefix, error))?;
+                },
+                NestedParams::Array { field, .. } => quote! {
+                    for (field_idx, field) in self.#field.iter().enumerate() {
+                        let idx = field_idx + 1;
+                        let suffix = format!("_{}", idx);
+                        let matching_fields = serialized
+                            .iter()
+                            .filter_map(|(key, value)| {
+                                let original_key = key.strip_suffix(&suffix)?;
+                                Some((original_key.to_owned(), value.to_owned()))
+                            })
+                            .collect();
+                        field.validate_fields(&matching_fields)
+                            .map_err(|error| format!("In nested index {}: {}", idx, error))?;
+                    }
+                },
+            })
+            .collect();
         let (serialize_fields_nested_tokens, deserialize_fields_nested_tokens): (Vec<_>, Vec<_>) =
             params
                 .iter()
@@ -409,7 +463,17 @@ pub fn derive_params(input: TokenStream) -> TokenStream {
             #(#deserialize_fields_nested_tokens);*
         };
 
-        (serialize_fields_tokens, deserialize_fields_tokens)
+        let validate_fields_tokens = quote! {
+            #(#validate_fields_self_tokens)*
+            #(#validate_fields_nested_tokens)*
+            Ok(())
+        };
+
+        (
+            serialize_fields_tokens,
+            validate_fields_tokens,
+            deserialize_fields_tokens,
+        )
     };
 
     quote! {
@@ -420,6 +484,10 @@ pub fn derive_params(input: TokenStream) -> TokenStream {
 
             fn serialize_fields(&self) -> ::std::collections::BTreeMap<String, String> {
                 #serialize_fields_tokens
+            }
+
+            fn validate_fields(&self, serialized: &::std::collections::BTreeMap<String, String>) -> Result<(), String> {
+                #validate_fields_tokens
             }
 
             fn deserialize_fields(&self, serialized: &::std::collections::BTreeMap<String, String>) {

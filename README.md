@@ -20,6 +20,8 @@ move onto it one at a time; until one has, it keeps its own copies.
 | `crates/plugin-kit-learn` | MIDI Learn's core: the 16 × 128 table of atomics the audio thread reads, a plug-in's list of learnable parameters, reserved controllers, absolute 7-bit values on an exact channel, jump takeover, one controller a control and one control a controller, the table saved by parameter id with the host's project, the glide of a learned knob |
 | `crates/plugin-kit-materials` | The worn skins' materials: pictures placed and resampled at a scale, a display's glass, a lit button's light on the surface round it and its translucent cap lit from inside, dots filled as one shape, a dot-matrix display's lettering (K5) |
 | `crates/plugin-kit-stereo` | The stereo and DRIVE's AUTO GAIN: a constant-power pan law, where SCATTER places the voices (EVEN, CENTER) and DOUBLE its pairs, INNER's band on either side (K7), the places' glide and the trims of voices summed; AUTO GAIN's curve measured off the audio thread for each sound, K-weighted, read by the audio thread without a lock and saved with the session (K6) |
+| `crates/plugin-kit-standalone` | Standalone instruments' audio/MIDI settings, safe stream ownership, routing, capture-clock adaptation, recovery and atomic sessions; CPAL 0.15.3 and midir 0.9.1, with a processor/editor adapter supplied by the instrument (`docs/standalone.md`) |
+| `crates/plugin-kit-queue` | Packed atomic event/frame queues with one-attempt operations: no unsafe code, allocation, retry loop or dependency on an audio backend |
 | `third_party/nih-plug` | The plug-in framework, at upstream's commit with fifteen changes (`PATCHES.md`) |
 | `third_party/baseview` | The editor's windows, with five changes for Windows hosts and one for macOS (`PATCHES.md`) |
 | `third_party/softbuffer` | The editor's pixels, at the 0.4.8 release with two changes for macOS: for hosts that load several plug-ins into one process, and the frame kept and shown in tiles, only where it changed (`PATCHES.md`) |
@@ -74,6 +76,8 @@ The vendored crates are not members of this workspace; the plug-ins build and te
 - softbuffer, by the rust-windowing contributors (MIT or Apache-2.0).
 - clap-wrapper, by the Free Audio contributors (MIT); the CLAP headers (MIT); Apple's
   AudioUnitSDK (Apache-2.0).
+- CPAL, by the RustAudio contributors (Apache-2.0); midir, by its contributors (MIT);
+  crossbeam-channel (MIT or Apache-2.0); tempfile (MIT or Apache-2.0).
 
 Each keeps its licence in its folder. Everything else here is GPL-3.0-or-later
 (`LICENSE`), Copyright © 2026 Idle Foundry Ltd.

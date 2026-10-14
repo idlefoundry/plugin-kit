@@ -447,3 +447,62 @@ In REAPER 7.82 (CLAP and VST3) and Cubase 15 (VST3), the CA-74's renamed build c
 and the settings menus and cancelled a readout's typing with Escape, its window kept, Enter and
 Backspace working; idle Escape and Space matched the VST3. The CA-72 has the same path and takes
 this as its own baseview change 6.
+
+## K-STANDALONE. Shared standalone audio, MIDI and sessions
+
+**The owner, 2026-10-13:** asked for a researched standalone specification and each
+task implemented, with the onscreen keyboard replacing the voices/stereo/output
+area and a button on the preview/settings rail switching views. The CA-72's frozen
+`docs/standalone-spec.md` records the scope and acceptance criteria.
+
+**Decision:** put host services in `plugin-kit-standalone`, with an instrument/NIH
+adapter owning parameters and the editor. Keep CPAL 0.15.3 and midir 0.9.1 rather
+than raising the macOS floor. Native-default audio backends are the first support
+tier; ASIO/native PipeWire/production JACK routing remain separate integrations.
+The output callback owns the processor Box; destroying the stream returns it to
+the control thread. MIDI/input queues are preallocated and multi-producer safe;
+an overflow requests an emergency release. No callback acquires a mutex or does
+file/UI work. Channel routing, capture-clock adaptation, recovery, startup
+readiness, transactional apply and atomic sessions live in the same crate.
+
+The first implementation conservatively rejected separate input/output devices.
+Windows enumerates capture/render endpoints separately, so that would prevent
+its external input. The final implementation uses a bounded adaptive capture
+reservoir with linear interpolation and permits common-rate independent endpoints.
+Input denial keeps output-only playback available with a visible warning.
+
+**Evidence:** 19 deterministic tests pass on Linux, including zero counted
+callback allocations with variable frame counts and MIDI traffic, and 60-second
+independent-clock simulations at ±500 ppm, 48 kHz and 128/256 frames without
+capture over/underflow after priming. Strict Clippy and formatting pass. No physical
+audio/MIDI devices were opened. See `docs/standalone.md` for exact checks and
+support limits: CPAL's lack of stable OS identifiers, preserved malformed
+sessions, input adaptation quality/latency needing hardware verification, and
+bounded caller shutdown with OS-driver operations that cannot be forcibly
+terminated. Hardware and cross-OS acceptance remain unverified here.
+
+**Independent review corrections, 2026-10-13:** the first source router conflated
+channels and reported the final releaser's identity, and its controller clear
+could erase another device's ownership. Merge devices only within channel/pitch,
+retain the first emitted source, and give processors an explicit `Channel`/`Global`
+controller policy. CA-72 chooses Global to preserve its existing omni behavior;
+generic source/channel releases do not hard-mute an instrument's release tails.
+Lost MIDI devices have independent generation invalidation and bounded releases;
+surviving MIDI connections remain open.
+
+The final save's result now reaches `shutdown()`. A fingerprinted bad-file guard
+permits saving after the original is moved aside, while protecting a replacement
+file. A cross-platform file lock refuses a second instance using the same state
+directory. Saves coalesce. Sample-format choice checks the same buffer range as
+negotiation. Capture starts after output construction; bounded startup/overflow
+purging discards stale input before recent capture is played.
+
+Crossbeam's packed-queue predecessor could retry when a producer was preempted
+before publication. The shared `plugin-kit-queue` now uses atomic u64 slots,
+one-attempt producer/consumer claims and publication only after the complete
+payload is stored. It contains no unsafe code or retry loop. Failed MIDI claims
+request an emergency release; source generations prevent a paused producer's
+event from restarting a note afterward. There are 28 standalone tests and two
+queue tests, including these reproductions; strict Clippy and formatting pass.
+The separate CPAL CoreAudio retention/capability fixes are owned by the lead and
+must be integrated before claiming verified macOS stream lifecycle behavior.

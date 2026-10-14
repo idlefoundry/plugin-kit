@@ -416,6 +416,12 @@ impl<T: Enum + PartialEq + 'static> EnumParam<T> {
 }
 
 impl EnumParamInner {
+    /// Validate persisted identifiers before applying a complete state object.
+    #[cfg(feature = "standalone-production")]
+    pub(crate) fn has_id(&self, id: &str) -> bool {
+        self.ids.is_some_and(|ids| ids.contains(&id))
+    }
+
     /// Get the number of variants for this enum.
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {

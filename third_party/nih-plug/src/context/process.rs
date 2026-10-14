@@ -18,6 +18,14 @@ pub trait ProcessContext<P: Plugin> {
     /// Get the current plugin API.
     fn plugin_api(&self) -> PluginApi;
 
+    /// Consume a production-standalone panic at this callback's boundary. An instrument
+    /// opting in handles the reset before its local input queue, instead of receiving the
+    /// wrapper's synthetic CC120/121 sequence. Other wrappers and instruments retain their
+    /// normal MIDI behavior. This operation must not allocate, lock, or wait.
+    fn take_standalone_panic(&mut self) -> bool {
+        false
+    }
+
     /// Execute a task on a background thread using `[Plugin::task_executor]`. This allows you to
     /// defer expensive tasks for later without blocking either the process function or the GUI
     /// thread. As long as creating the `task` is realtime-safe, this operation is too.

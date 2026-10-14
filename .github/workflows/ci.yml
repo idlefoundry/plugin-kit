@@ -48,14 +48,14 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo fmt --all -- --check
 
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: ngspice's libraries
+      - name: Audio and ngspice libraries
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libreadline-dev bison flex
+          sudo apt-get install -y libasound2-dev libreadline-dev bison flex
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: ngspice 47, cached
         if: runner.os == 'Linux'
@@ -81,3 +81,6 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = Linux ]; then export REQUIRE_NGSPICE=1; fi
           cargo test --workspace --no-fail-fast
+
+      - name: Typed persistent-field derive tests
+        run: CARGO_TARGET_DIR="$RUNNER_TEMP/plugin-kit-derive" cargo test --manifest-path third_party/nih-plug/nih_plug_derive/Cargo.toml

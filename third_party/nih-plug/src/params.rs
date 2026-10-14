@@ -304,6 +304,19 @@ pub unsafe trait Params: 'static + Send + Sync {
         BTreeMap::new()
     }
 
+    /// Validate known persistent fields without changing any parameters or fields.
+    /// Call this after the plugin's state migrations and before restoring state
+    /// when a failed restore must leave the current state intact. Missing fields
+    /// and unknown keys are allowed for compatibility with other plugin versions.
+    ///
+    /// The derive macro checks each field's actual deserialization type and
+    /// recursively validates nested parameter objects. Manual implementations
+    /// that persist fields should implement this using [`persist::PersistentField::validate`].
+    #[allow(unused_variables)]
+    fn validate_fields(&self, serialized: &BTreeMap<String, String>) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Restore all fields marked with `#[persist = "stable_name"]` from a hashmap created by
     /// [`serialize_fields()`][Self::serialize_fields()]. All of these fields should be wrapped in a
     /// [`persist::PersistentField`] with thread safe interior mutability, like an `RwLock` or a
@@ -321,6 +334,10 @@ unsafe impl<P: Params> Params for Arc<P> {
 
     fn serialize_fields(&self) -> BTreeMap<String, String> {
         self.as_ref().serialize_fields()
+    }
+
+    fn validate_fields(&self, serialized: &BTreeMap<String, String>) -> Result<(), String> {
+        self.as_ref().validate_fields(serialized)
     }
 
     fn deserialize_fields(&self, serialized: &BTreeMap<String, String>) {

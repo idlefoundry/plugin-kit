@@ -582,3 +582,13 @@ an answer will follow (`resize_response_will_follow()`). Each editor keeps its o
 which request is which and what to restore; one that overrides neither hook is unchanged.
 `crates/plugin-kit-learn/tests/vst3_host.rs`: `a_resize_reports_the_hosts_answer_or_queues_to_its_gui_thread`
 and, on Linux, `a_queued_resize_reports_refusal_on_the_hosts_run_loop`, as the CA-72 has them.
+
+## K-CURSOR. The pointer's look on macOS (baseview change 7)
+
+2026-10-17: the CA-72's R-MAC-FIXES (eb2f705), for the CA-74's grip (its R-SIZE). baseview's
+macOS `Window::set_mouse_cursor` was `todo!()`: a call panicked, so an editor could not show the
+resize arrows over its grip on the Mac. `src/macos/cursor.rs` maps each `MouseCursor` to an
+`NSCursor` (the diagonal arrows to AppKit's own window corners'); the window keeps the look
+asked for and shows it again as the pointer moves and as AppKit updates it. Windows and Linux
+are unchanged. The four macOS files are the CA-72's to the byte (they were the same before the
+change), built and tried there on macOS 27; not built in the kit on the Mac this time.

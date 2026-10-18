@@ -11,7 +11,7 @@ today's rustfmt gives it, so that `cargo fmt --all` leaves the tree as it is.
 
 Five changes for Windows (1 to 3, 5 and 6), in `src/win/window.rs`, `src/win/drop_target.rs`,
 `src/win/escape.rs`, `src/event.rs` and `src/window.rs` (the first three the CA-72's
-`docs/decisions.md` R26, R28 and R34), and one for macOS (4, below):
+`docs/decisions.md` R26, R28 and R34), and two for macOS (4 and 7, below):
 
 1. **The window procedure never calls the handler while it is busy.** baseview keeps the
    window's handler in a `RefCell` and borrows it for each event. A message can be sent to
@@ -132,6 +132,17 @@ And one for macOS, in `src/macos/view.rs` (the CA-72's `docs/decisions.md` R56, 
    REAPER VST3 menu Escape and readout typing, and Cubase Pro 15 VST3 menu Escape also passed.
    The manifest enables winapi's `processthreadsapi` for the GUI thread ID and allows upstream's
    existing manual `MouseCursor::default` under `derivable_impls` for standalone Clippy checks.
+
+7. **On macOS, the pointer's look is set** (the CA-72's `docs/decisions.md` R-MAC-FIXES).
+   Upstream's macOS `Window::set_mouse_cursor` was `todo!()`: a call panicked, so the editor
+   could not show the resize arrows over its grip there (R-SIZE). Now `src/macos/cursor.rs`
+   maps each `MouseCursor` to an `NSCursor` (the diagonal resize arrows to AppKit's
+   `_windowResizeNorthWestSouthEastCursor` and `…NorthEastSouthWest…`, the ones its own window
+   corners use, asked for only where `NSCursor` answers to them; looks AppKit has nothing like,
+   the arrow). `src/macos/window.rs` keeps the look asked for (`WindowInner::cursor`) and shows
+   it; `src/macos/view.rs` shows it again on each `mouseMoved:` (a host's window may have set
+   its own) and in a new `cursorUpdate:` (the tracking area already asked for it). Windows and
+   Linux are unchanged.
 
 Upstream's master has since rewritten the Windows backend and the handler's interface; to
 move to it, the editor must be ported, and the tests above show whether it still needs this.

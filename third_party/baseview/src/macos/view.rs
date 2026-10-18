@@ -184,6 +184,7 @@ unsafe fn create_view_class() -> &'static Class {
     );
 
     class.add_method(sel!(mouseMoved:), mouse_moved as extern "C" fn(&Object, Sel, id));
+    class.add_method(sel!(cursorUpdate:), cursor_update as extern "C" fn(&Object, Sel, id));
     class.add_method(sel!(mouseDragged:), mouse_moved as extern "C" fn(&Object, Sel, id));
     class.add_method(sel!(rightMouseDragged:), mouse_moved as extern "C" fn(&Object, Sel, id));
     class.add_method(sel!(otherMouseDragged:), mouse_moved as extern "C" fn(&Object, Sel, id));
@@ -394,8 +395,18 @@ extern "C" fn update_tracking_areas(this: &Object, _self: Sel, _: id) {
 
 extern "C" fn mouse_moved(this: &Object, _sel: Sel, event: id) {
     let state = unsafe { WindowState::from_view(this) };
+    // The look asked for, shown again: a host's window may have set its own as the pointer
+    // came in (the CA-72's change 7).
+    super::cursor::show(state.window_inner.cursor.get());
     let modifiers = unsafe { NSEvent::modifierFlags(event) };
     cursor_at(this, &state, event, modifiers);
+}
+
+/// AppKit's update of the pointer's look as it enters the view (the tracking area's
+/// `cursorUpdate`): the look asked for, not the arrow (the CA-72's change 7).
+extern "C" fn cursor_update(this: &Object, _sel: Sel, _event: id) {
+    let state = unsafe { WindowState::from_view(this) };
+    super::cursor::show(state.window_inner.cursor.get());
 }
 
 /// The pointer at `event`'s place in the view, told to the handler.

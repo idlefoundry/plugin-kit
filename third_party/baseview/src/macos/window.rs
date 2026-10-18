@@ -63,6 +63,9 @@ pub(super) struct WindowInner {
     ns_window: Cell<Option<id>>,
     /// Our subclassed NSView
     ns_view: id,
+    /// The pointer's look over the view, as last asked for (shown again as the pointer moves
+    /// and as AppKit updates it: the CA-72's change 7).
+    pub(super) cursor: Cell<MouseCursor>,
 
     #[cfg(feature = "opengl")]
     gl_context: Option<GlContext>,
@@ -157,6 +160,7 @@ impl<'a> Window<'a> {
             ns_app: Cell::new(None),
             ns_window: Cell::new(None),
             ns_view,
+            cursor: Cell::new(MouseCursor::Default),
 
             #[cfg(feature = "opengl")]
             gl_context: options
@@ -232,6 +236,7 @@ impl<'a> Window<'a> {
             ns_app: Cell::new(Some(app)),
             ns_window: Cell::new(Some(ns_window)),
             ns_view,
+            cursor: Cell::new(MouseCursor::Default),
 
             #[cfg(feature = "opengl")]
             gl_context: options
@@ -335,8 +340,9 @@ impl<'a> Window<'a> {
         }
     }
 
-    pub fn set_mouse_cursor(&mut self, _mouse_cursor: MouseCursor) {
-        todo!()
+    pub fn set_mouse_cursor(&mut self, mouse_cursor: MouseCursor) {
+        self.inner.cursor.set(mouse_cursor);
+        super::cursor::show(mouse_cursor);
     }
 
     #[cfg(feature = "opengl")]

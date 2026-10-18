@@ -593,8 +593,13 @@ void ProcessAdapter::addMIDIEvent(UInt32 inStatus, UInt32 inData1, UInt32 inData
       this->_eventindices.emplace_back((this->_events.size()));
       this->_events.emplace_back(n);
       break;
-    case 0xE:  // pitch bend -> channel-wide tuning expression (+/- 2 semitones)
-      if (_preferred_midi_dialect == CLAP_NOTE_DIALECT_CLAP)
+    case 0xE:  // channel pitch bend, with the receiving instrument's bend range
+      // A preference for typed notes does not remove the port's raw MIDI support.
+      // Turning a channel wheel into per-note tuning loses its identity (and fixes
+      // its range at +/-2 semitones); nih-plug instruments handle the MIDI wheel
+      // separately from per-note tuning. Preserve it when supported.
+      if (_preferred_midi_dialect == CLAP_NOTE_DIALECT_CLAP &&
+          !(_supported_midi_dialects & (CLAP_NOTE_DIALECT_MIDI | CLAP_NOTE_DIALECT_MIDI_MPE)))
       {
         const int bend14 = ((inData2 & 0x7F) << 7) | (inData1 & 0x7F);
         n.header.type = CLAP_EVENT_NOTE_EXPRESSION;

@@ -82,6 +82,23 @@ One more, from the CA-72's trial in GarageBand 10.4.14 on macOS 27 (2026-10-11; 
    Tried in GarageBand, stopped: NOTE PRIORITY, RETRIGGER, POLY, a drag of VOICES and DRIVE
    typed as 8.4 each took at once (none did before).
 
+And one more, from the CA-72's issue 43 (2026-10-15; its `docs/decisions.md`
+R-AU-PITCH-BEND), in `src/detail/auv2/process.cpp`:
+
+6. **A channel pitch wheel stays MIDI when the port supports it.** The AU process adapter
+   turned pitch bend into a channel-wide `CLAP_NOTE_EXPRESSION_TUNING` whenever the plugin
+   preferred typed CLAP notes, even when its port also took raw MIDI. nih-plug turns that
+   expression into `PolyTuning`, which an instrument following `MidiPitchBend` (the CA-72's,
+   the CA-74's) never reads: in GarageBand and Logic the wheel did nothing, and the conversion
+   fixed its range at two semitones instead of the instrument's own MIDI BEND RANGE.
+   `ProcessAdapter::addMIDIEvent` now keeps the MIDI bytes when a CLAP-preferred port also
+   supports MIDI or MPE; a CLAP-only port keeps the tuning. Notes, pressure and the other
+   controllers are translated as before. `tests/auv2-midi.cpp` (the kit's own, not
+   upstream's) runs the adapter itself on its event list: the bend's channel, value and
+   sample offset kept for CLAP with MIDI, MIDI alone and CLAP with MPE; the tuning for CLAP
+   alone; notes, a zero-velocity note-off, CCs 1, 64, 120, 121 and 123 and pressure
+   unchanged. A plug-in builds it with its component (each plug-in's `scripts/auv2`).
+
 To update: copy the same paths from a newer tag (and the SDKs at the versions it then
 fetches), apply these changes again if upstream has not made its own, build the component
 (`scripts/auv2.sh`), validate it (`scripts/validate.sh`: auval and pluginval, several runs),

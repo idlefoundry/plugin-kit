@@ -552,3 +552,21 @@ unchanged. A channel-gated cold processor proves restored state/configuration ar
 available while preparation is still pending; the test failed before this change.
 All 43 standalone tests and strict workspace Clippy pass locally. The consumer's
 native two-launch restoration check remains required on its updated artifact.
+
+## K-AU-PITCH-BEND. A channel pitch wheel reaches the instrument through the Audio Unit
+
+2026-10-17: the CA-72's issue 43 (its R-AU-PITCH-BEND, 3647201): in GarageBand the AU ignored
+the pitch wheel. clap-wrapper's AU adapter turned channel pitch bend into per-note tuning
+whenever the plugin preferred CLAP notes, though the port took MIDI too; nih-plug makes that
+`PolyTuning`, which the CA-72 and the CA-74 never read (they follow `MidiPitchBend`), and the
+conversion fixed the range at two semitones. clap-wrapper's change 6 (`PATCHES.md`) keeps the
+MIDI bytes when the port supports MIDI or MPE; a CLAP-only port keeps the tuning.
+
+`third_party/clap-wrapper/tests/auv2-midi.cpp`, the adapter on its own event list, is built
+and run by each plug-in's `scripts/auv2.sh` with its component. Measured with the CA-74's
+(Highstead's, Apple silicon, macOS 27, in-process through the public AU API, its own test
+code): before the change the adapter test failed for CLAP with MIDI and CLAP with MPE, and a
+full bend up at MIDI BEND RANGE 2 moved A4 by +2.1 cents; after it, every adapter case passed
+and the wheel moved A4 by +200.1 and -202.5 cents at range 2, +703.7 and -700.3 at 7, under 3
+at 0, from MIDI bytes and MIDI 1 and MIDI 2 event lists alike. Not tried: a host (GarageBand,
+Logic), a physical controller.

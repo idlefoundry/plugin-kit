@@ -167,10 +167,6 @@ Windows 11 (2026-10-07; the CA-72's `docs/decisions.md` R36, its change 12; K4 h
     The CA-72's change 13 (its `docs/decisions.md` R-KEYS). `crates/plugin-kit-learn/tests/
     vst3_host.rs` gives the view keys as Cubase does.
 
-To move to a newer upstream commit, copy its `Cargo.toml`, `LICENSE`, `README.md`, `src`
-and `nih_plug_derive` here and apply the fifteen changes again, unless upstream has fixed them.
-Then update the commit above, and `nih_plug_xtask`'s `rev` in each plug-in's workspace `Cargo.toml`.
-
 16. **A shipped standalone adapter shares the exact instrument and editor.**
     `standalone-production` exports `wrapper::production`, independently of the
     development launcher's JACK dependency. The exclusively owned processor is
@@ -191,3 +187,23 @@ Then update the commit above, and `nih_plug_xtask`'s `rev` in each plug-in's wor
     The production context offers one boundary reset to opting-in instruments;
     other instruments keep synthetic CC120/121. CA-72 coalesces that boundary
     with its UI panic so fresh local notes survive either callback ordering.
+
+17. **A host's answer to a resize reaches the editor, however late.** VST3's
+    `IPlugFrame::resizeView()` can refuse, and on Linux the wrapper queues the request onto
+    the host's `IRunLoop`, so `GuiContext::request_resize()` returned `true` before the host
+    had answered, and a later refusal left the host's frame and the editor at different
+    sizes. The frame now captures the editor's request id and size
+    (`Editor::resize_request()`, by default `(0, size())`) before calling the host, and reports
+    the host's answer through `Editor::resize_result()` on the host's GUI thread, including a
+    request queued onto the run loop (`src/wrapper/vst3/view.rs`; `inner.rs` no longer asserts
+    on a refusal, a valid answer). `GuiContext::resize_response_will_follow()` says whether the
+    wrapper sends these answers (VST3's: `true`; others `false`), and VST3's `request_resize()`
+    returns whether the request was queued, so a request it could not queue is answered `false`
+    there and then (`src/wrapper/vst3/context.rs`). An editor that overrides
+    neither hook behaves as before. The CA-72's change 14 (its `docs/decisions.md` R72).
+    `crates/plugin-kit-learn/tests/vst3_host.rs` answers the view's request at once both ways
+    and, on Linux, delivers a refusal through the actual run-loop socket.
+
+To move to a newer upstream commit, copy its `Cargo.toml`, `LICENSE`, `README.md`, `src`
+and `nih_plug_derive` here and apply the seventeen changes again, unless upstream has fixed them.
+Then update the commit above, and `nih_plug_xtask`'s `rev` in each plug-in's workspace `Cargo.toml`.

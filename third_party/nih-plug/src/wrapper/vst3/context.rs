@@ -183,8 +183,10 @@ impl<P: Vst3Plugin> GuiContext for WrapperGuiContext<P> {
         let task_posted = self.inner.schedule_gui(Task::RequestResize);
         nih_debug_assert!(task_posted, "The task queue is full, dropping task...");
 
-        // TODO: We don't handle resize request failures right now. In practice this should however
-        //       not happen.
+        task_posted
+    }
+
+    fn resize_response_will_follow(&self) -> bool {
         true
     }
 

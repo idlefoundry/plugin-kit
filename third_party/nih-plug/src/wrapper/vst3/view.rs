@@ -155,9 +155,9 @@ impl<P: Vst3Plugin> WrapperView<P> {
             return false;
         }
 
-        match &*self.plug_frame.read() {
+        let (request, (unscaled_width, unscaled_height)) = self.editor.lock().resize_request();
+        let accepted = match &*self.plug_frame.read() {
             Some(plug_frame) => {
-                let (unscaled_width, unscaled_height) = self.editor.lock().size();
                 let scaling_factor = self.scaling_factor.load(Ordering::Relaxed);
                 let mut size = ViewRect {
                     right: (unscaled_width as f32 * scaling_factor).round() as i32,
@@ -176,7 +176,9 @@ impl<P: Vst3Plugin> WrapperView<P> {
                 result == kResultOk
             }
             None => false,
-        }
+        };
+        self.editor.lock().resize_result(request, accepted);
+        accepted
     }
 
     /// If the host supports `IRunLoop`, then this will post the task to a task queue that will be

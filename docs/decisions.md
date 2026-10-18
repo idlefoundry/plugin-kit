@@ -570,3 +570,15 @@ full bend up at MIDI BEND RANGE 2 moved A4 by +2.1 cents; after it, every adapte
 and the wheel moved A4 by +200.1 and -202.5 cents at range 2, +703.7 and -700.3 at 7, under 3
 at 0, from MIDI bytes and MIDI 1 and MIDI 2 event lists alike. Not tried: a host (GarageBand,
 Logic), a physical controller.
+
+## K-RESIZE-RESULT. A host's answer to a resize reaches the editor (nih-plug change 17)
+
+2026-10-17: the CA-72's R72 (its nih-plug change 14, b86a394), for the CA-74. VST3's
+`request_resize()` returned success before the host answered, always on Linux (the request is
+queued onto the host's `IRunLoop`), so a host that then refused left its frame and the editor's
+window at different sizes. The frame now reports the host's answer, with the id of the request
+the editor made (`Editor::resize_request()` and `resize_result()`), and the context says that
+an answer will follow (`resize_response_will_follow()`). Each editor keeps its own record of
+which request is which and what to restore; one that overrides neither hook is unchanged.
+`crates/plugin-kit-learn/tests/vst3_host.rs`: `a_resize_reports_the_hosts_answer_or_queues_to_its_gui_thread`
+and, on Linux, `a_queued_resize_reports_refusal_on_the_hosts_run_loop`, as the CA-72 has them.

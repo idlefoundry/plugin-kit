@@ -1,5 +1,6 @@
 use crate::devices::{AudioListing, CpalSource, MidiDiscovery, describe};
 use crate::listing::{DEVICE_LIMIT, Listed, Lister, MidiPoller};
+use crate::microphone::{self, Gate, Microphone};
 use crate::routing::{CAPTURE_CAPACITY, InputResampler, MIDI_PER_BLOCK, MidiRouter, pack_frame};
 use crate::{
     AppHandle, AppOptions, AudioBlock, AudioProcessor, Command, Config, Devices, MidiEvent,
@@ -24,6 +25,7 @@ pub(crate) struct Metrics {
     frames: AtomicU32,
     errors: AtomicU64,
     input_overflows: AtomicU64,
+    output_frames: AtomicU64,
     failed: AtomicBool,
     shutdown: AtomicBool,
     ready: AtomicBool,
@@ -35,6 +37,7 @@ impl Metrics {
         s.actual_buffer_frames = self.frames.load(Ordering::Relaxed);
         s.xruns = self.errors.load(Ordering::Relaxed);
         s.input_overflows = self.input_overflows.load(Ordering::Relaxed);
+        s.output_frames = self.output_frames.load(Ordering::Relaxed);
     }
 }
 
@@ -102,6 +105,52 @@ pub(crate) struct Discovery {
     pub(crate) midi: MidiPoller,
 }
 
+/// The machine as the control thread uses it: its device lists, the streams it
+/// opens and the microphone permission. Tests put fakes in its place.
+pub(crate) struct Hardware {
+    pub(crate) discovery: Discovery,
+    pub(crate) streams: Box<dyn Streams>,
+    pub(crate) microphone: Box<dyn Microphone>,
+}
+
+impl Hardware {
+    fn system(app_id: &str) -> Self {
+        Self {
+            discovery: Discovery::system(app_id),
+            streams: Box::new(CpalStreams(cpal::default_host())),
+            microphone: microphone::system(),
+        }
+    }
+}
+
+/// Opens the negotiated devices. Opening may wait on a driver.
+pub(crate) trait Streams: Send {
+    fn open(
+        &self,
+        processor: Box<dyn AudioProcessor>,
+        config: &Negotiated,
+        handle: &AppHandle,
+    ) -> Result<Box<dyn Playing>, StartFailure>;
+}
+
+/// Open streams, which give back their processor when stopped.
+pub(crate) trait Playing {
+    fn stop(self: Box<Self>) -> Result<Box<dyn AudioProcessor>, String>;
+}
+
+struct CpalStreams(cpal::Host);
+
+impl Streams for CpalStreams {
+    fn open(
+        &self,
+        processor: Box<dyn AudioProcessor>,
+        config: &Negotiated,
+        handle: &AppHandle,
+    ) -> Result<Box<dyn Playing>, StartFailure> {
+        start(processor, &self.0, config, handle).map(|active| Box::new(active) as Box<dyn Playing>)
+    }
+}
+
 impl Discovery {
     fn system(app_id: &str) -> Self {
         let app_id = app_id.to_owned();
@@ -147,17 +196,17 @@ pub fn spawn(
     state: Option<Arc<dyn SessionState>>,
     options: AppOptions,
 ) -> Result<HostRuntime, String> {
-    let discovery = options
+    let hardware = options
         .device_access
-        .then(|| Discovery::system(&options.app_id));
-    spawn_with(processor, state, options, discovery)
+        .then(|| Hardware::system(&options.app_id));
+    spawn_with(processor, state, options, hardware)
 }
 
 pub(crate) fn spawn_with(
     processor: Box<dyn AudioProcessor>,
     state: Option<Arc<dyn SessionState>>,
     options: AppOptions,
-    discovery: Option<Discovery>,
+    hardware: Option<Hardware>,
 ) -> Result<HostRuntime, String> {
     std::fs::create_dir_all(&options.state_dir)
         .map_err(|e| format!("Unable to open standalone session directory: {e}"))?;
@@ -185,6 +234,7 @@ pub(crate) fn spawn_with(
             xruns: 0,
             midi_overflows: 0,
             input_overflows: 0,
+            output_frames: 0,
         }),
         midi: Arc::new(MidiQueue::new()),
         metrics: Arc::new(Metrics::default()),
@@ -197,7 +247,7 @@ pub(crate) fn spawn_with(
                 processor,
                 state,
                 options,
-                discovery,
+                hardware,
                 control_handle,
                 rx,
                 ready_tx,
@@ -264,6 +314,9 @@ impl Callback {
             (data.len() / self.channels).min(u32::MAX as usize) as u32,
             Ordering::Relaxed,
         );
+        self.metrics
+            .output_frames
+            .fetch_add((data.len() / self.channels) as u64, Ordering::Relaxed);
         self.input.begin(data.len() / self.channels);
         let max = self.left.len();
         for output in data.chunks_mut(max * self.channels) {
@@ -338,8 +391,8 @@ struct Active {
     input: Option<cpal::Stream>,
     returned: Receiver<Box<dyn AudioProcessor>>,
 }
-impl Active {
-    fn stop(self) -> Result<Box<dyn AudioProcessor>, String> {
+impl Playing for Active {
+    fn stop(self: Box<Self>) -> Result<Box<dyn AudioProcessor>, String> {
         // Destruction returns ownership even if the device never called us once.
         drop(self.output);
         drop(self.input);
@@ -865,6 +918,11 @@ fn transition<T>(
     }
 }
 
+/// Whether access granted now should reopen the running streams with the input.
+fn reopen_input(config: &Config, active: bool, pending: bool) -> bool {
+    config.input.is_some() && active && !pending
+}
+
 fn should_retry_after_poll(active: bool, stopped_by_user: bool, pending: bool) -> bool {
     !active && !stopped_by_user && !pending
 }
@@ -992,7 +1050,7 @@ fn control(
     mut initial: Box<dyn AudioProcessor>,
     state: Option<Arc<dyn SessionState>>,
     options: AppOptions,
-    mut discovery: Option<Discovery>,
+    hardware: Option<Hardware>,
     handle: Arc<AppHandle>,
     commands: Receiver<Command>,
     ready: Sender<()>,
@@ -1042,9 +1100,18 @@ fn control(
         set_status(&handle, Phase::Error, Some(e));
     }
     initial.deactivate();
-    let host = options.device_access.then(cpal::default_host);
+    let (mut discovery, mut access) = match hardware {
+        Some(hardware) => (
+            Some(hardware.discovery),
+            Some((
+                hardware.streams,
+                Gate::new(hardware.microphone, handle.commands.clone()),
+            )),
+        ),
+        None => (None, None),
+    };
     let mut processor = Some(initial);
-    let mut active: Option<Active> = None;
+    let mut active: Option<Box<dyn Playing>> = None;
     let mut midi = Vec::new();
     let mut successful: Option<Config> = None;
     let mut active_output: Option<crate::DeviceId> = None;
@@ -1111,6 +1178,17 @@ fn control(
             Some(Command::Save) => {
                 handle.metrics.save_requested.store(true, Ordering::Release);
             }
+            Some(Command::Microphone(granted)) => {
+                // Allowed: open the input now, unless settings are already on
+                // their way (they will be admitted afresh).
+                if let Some((_, gate)) = &mut access
+                    && gate.answered(granted)
+                    && reopen_input(&config, active.is_some(), need_apply)
+                {
+                    candidate = config.clone();
+                    need_apply = true;
+                }
+            }
             Some(Command::Restore(bytes)) => {
                 handle.midi.panic();
                 midi.clear();
@@ -1140,6 +1218,13 @@ fn control(
             if let Some(discovery) = &mut discovery {
                 discovery.audio.request();
                 discovery.midi.request();
+            }
+            if let Some((_, gate)) = &mut access
+                && gate.recheck()
+                && reopen_input(&config, active.is_some(), need_apply)
+            {
+                candidate = config.clone();
+                need_apply = true;
             }
         }
         let mut listed_audio = false;
@@ -1252,7 +1337,7 @@ fn control(
             let devices = handle.snapshot().devices;
             resolve_default_midi(&mut candidate, &devices);
             let negotiated = negotiate(&candidate, &devices);
-            if let (Some(host), Ok(negotiated)) = (&host, negotiated.as_ref()) {
+            if let (Some((streams, gate)), Ok(negotiated)) = (&mut access, negotiated.as_ref()) {
                 set_status(&handle, Phase::Starting, None);
                 handle.midi.panic();
                 midi.clear();
@@ -1269,7 +1354,7 @@ fn control(
                 if let Some(p) = processor.take() {
                     let result =
                         transition(p, negotiated, successful.as_ref(), &devices, |p, n| {
-                            start(p, host, n, &handle)
+                            streams.open(p, &gate.admit(n), &handle)
                         });
                     active = result.stream;
                     active_output = active
@@ -1363,6 +1448,9 @@ fn control(
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             ensure_midi_error(&mut snapshot, &midi_discovery_error);
+            if let Some((_, gate)) = &mut access {
+                gate.publish(&mut snapshot, midi_warnings.reported.as_ref());
+            }
             midi_warnings.publish(&mut snapshot);
         }
     }
@@ -1439,6 +1527,7 @@ mod tests {
             xruns: 0,
             midi_overflows: 0,
             input_overflows: 0,
+            output_frames: 0,
         }
     }
 
@@ -2005,9 +2094,13 @@ mod tests {
             ],
             Some("Steam Streaming Speakers"),
         );
-        let discovery = Discovery {
-            audio: lister(&source, limit),
-            midi: MidiPoller::spawn(|| || Ok(vec!["Keys".to_string()]), limit),
+        let hardware = Hardware {
+            discovery: Discovery {
+                audio: lister(&source, limit),
+                midi: MidiPoller::spawn(|| || Ok(vec!["Keys".to_string()]), limit),
+            },
+            streams: Box::new(CpalStreams(cpal::default_host())),
+            microphone: microphone::system(),
         };
         let dir = tempfile::tempdir().expect("temp");
         let start = Instant::now();
@@ -2019,7 +2112,7 @@ mod tests {
                 state_dir: dir.path().into(),
                 device_access: true,
             },
-            Some(discovery),
+            Some(hardware),
         )
         .expect("spawn");
         let handle = runtime.handle();
@@ -2266,5 +2359,318 @@ mod tests {
         ambiguous.midi_inputs = vec![String::new(), "Same".into(), "Same".into()];
         assert!(!resolve_default_midi(&mut automatic, &ambiguous));
         assert!(automatic.midi_inputs.is_empty());
+    }
+
+    /// A permission the test answers, as the user answers the prompt.
+    #[derive(Clone)]
+    struct FakeMicrophone {
+        status: Arc<Mutex<microphone::Permission>>,
+        requests: Arc<AtomicU32>,
+        waiting: Arc<Mutex<Vec<microphone::Answer>>>,
+    }
+    impl FakeMicrophone {
+        fn new(status: microphone::Permission) -> Self {
+            Self {
+                status: Arc::new(Mutex::new(status)),
+                requests: Arc::new(AtomicU32::new(0)),
+                waiting: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+        fn set(&self, status: microphone::Permission) {
+            *self.status.lock().expect("status") = status;
+        }
+        fn answer(&self, granted: bool) {
+            self.set(if granted {
+                microphone::Permission::Granted
+            } else {
+                microphone::Permission::Denied
+            });
+            let waiting = std::mem::take(&mut *self.waiting.lock().expect("waiting"));
+            for answered in waiting {
+                answered(granted);
+            }
+        }
+    }
+    impl Microphone for FakeMicrophone {
+        fn status(&self) -> microphone::Permission {
+            *self.status.lock().expect("status")
+        }
+        fn request(&self, answered: microphone::Answer) {
+            self.requests.fetch_add(1, Ordering::SeqCst);
+            self.waiting.lock().expect("waiting").push(answered);
+        }
+        fn app_name(&self) -> String {
+            "Test App".into()
+        }
+    }
+
+    /// Streams that render on a thread of their own, as a device would, and
+    /// record whether each opening had an input.
+    #[derive(Clone, Default)]
+    struct FakeStreams {
+        opened: Arc<Mutex<Vec<bool>>>,
+    }
+    impl FakeStreams {
+        fn inputs(&self) -> Vec<bool> {
+            self.opened.lock().expect("opened").clone()
+        }
+    }
+    struct FakePlaying {
+        stop: Arc<AtomicBool>,
+        thread: JoinHandle<Box<dyn AudioProcessor>>,
+    }
+    impl Playing for FakePlaying {
+        fn stop(self: Box<Self>) -> Result<Box<dyn AudioProcessor>, String> {
+            self.stop.store(true, Ordering::Release);
+            self.thread.join().map_err(|_| "render thread".to_string())
+        }
+    }
+    impl Streams for FakeStreams {
+        fn open(
+            &self,
+            mut processor: Box<dyn AudioProcessor>,
+            config: &Negotiated,
+            handle: &AppHandle,
+        ) -> Result<Box<dyn Playing>, StartFailure> {
+            self.opened
+                .lock()
+                .expect("opened")
+                .push(config.input.is_some());
+            let metrics = Arc::clone(&handle.metrics);
+            let stop = Arc::new(AtomicBool::new(false));
+            let stopping = Arc::clone(&stop);
+            let thread = std::thread::spawn(move || {
+                let (mut left, mut right, silence) = ([0.0; 64], [0.0; 64], [0.0; 64]);
+                while !stopping.load(Ordering::Acquire) {
+                    processor.process(AudioBlock {
+                        left: &mut left,
+                        right: &mut right,
+                        input_left: &silence,
+                        input_right: &silence,
+                        midi: &[],
+                        panic: false,
+                    });
+                    metrics.output_frames.fetch_add(64, Ordering::Relaxed);
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                processor
+            });
+            Ok(Box::new(FakePlaying { stop, thread }))
+        }
+    }
+
+    struct MicrophoneRig {
+        runtime: HostRuntime,
+        handle: Arc<AppHandle>,
+        microphone: FakeMicrophone,
+        streams: FakeStreams,
+        with_input: Config,
+        _dir: tempfile::TempDir,
+    }
+
+    /// A running instance (speakers, no input), with the microphone in `status`.
+    fn microphone_rig(status: microphone::Permission) -> MicrophoneRig {
+        use crate::listing::tests::{FakeDevice, FakeSource, info, lister};
+        let limit = Duration::from_secs(1);
+        let source = FakeSource::new(
+            vec![
+                FakeDevice::answers(info("Speakers", 0, 2)),
+                FakeDevice::answers(info("Mic", 2, 0)),
+            ],
+            Some("Speakers"),
+        );
+        let microphone = FakeMicrophone::new(status);
+        let streams = FakeStreams::default();
+        let hardware = Hardware {
+            discovery: Discovery {
+                audio: lister(&source, limit),
+                midi: MidiPoller::spawn(|| || Ok(Vec::new()), limit),
+            },
+            streams: Box::new(streams.clone()),
+            microphone: Box::new(microphone.clone()),
+        };
+        let dir = tempfile::tempdir().expect("temp");
+        let runtime = spawn_with(
+            Box::new(Fake),
+            None,
+            AppOptions {
+                app_id: "Test".into(),
+                state_dir: dir.path().into(),
+                device_access: true,
+            },
+            Some(hardware),
+        )
+        .expect("spawn");
+        let handle = runtime.handle();
+        wait_for(
+            || handle.snapshot().phase == Phase::Running,
+            "output started",
+        );
+        assert_eq!(streams.inputs(), [false]);
+        let mut with_input = handle.snapshot().config;
+        with_input.input = Some(info("Mic", 2, 0).id);
+        MicrophoneRig {
+            runtime,
+            handle,
+            microphone,
+            streams,
+            with_input,
+            _dir: dir,
+        }
+    }
+
+    fn wait_for(mut done: impl FnMut() -> bool, what: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !done() {
+            assert!(Instant::now() < deadline, "timed out: {what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn applied(handle: &AppHandle, config: &Config) -> Config {
+        let receipt = handle.apply_tracked(config.clone()).expect("queued");
+        let mut outcome = Ok(None);
+        wait_for(
+            || {
+                outcome = receipt.try_result();
+                !matches!(outcome, Ok(None))
+            },
+            "apply answered",
+        );
+        outcome.expect("applied").expect("config")
+    }
+
+    fn assert_sounding(handle: &AppHandle) {
+        let before = handle.snapshot().output_frames;
+        wait_for(
+            || handle.snapshot().output_frames > before + 256,
+            "output frames advance",
+        );
+        assert_eq!(handle.snapshot().phase, Phase::Running);
+    }
+
+    const DENIED: &str = "Microphone access denied. Allow Test App in System Settings › Privacy & Security › Microphone.";
+
+    #[test]
+    fn output_keeps_running_while_the_microphone_prompt_waits_and_the_input_opens_once_allowed() {
+        let mut rig = microphone_rig(microphone::Permission::Undetermined);
+        let accepted = applied(&rig.handle, &rig.with_input);
+        assert_eq!(
+            accepted.input, rig.with_input.input,
+            "the choice is kept and saved"
+        );
+        wait_for(
+            || rig.handle.snapshot().warning.as_deref() == Some(microphone::WAITING),
+            "waiting notice",
+        );
+        assert_eq!(rig.microphone.requests.load(Ordering::SeqCst), 1);
+        assert_eq!(rig.streams.inputs(), [false, false], "no input yet");
+        assert_sounding(&rig.handle);
+
+        // Applying again while the prompt is up asks nothing more.
+        applied(&rig.handle, &rig.with_input);
+        assert_eq!(rig.microphone.requests.load(Ordering::SeqCst), 1);
+        assert_eq!(rig.streams.inputs(), [false, false, false]);
+        assert_sounding(&rig.handle);
+
+        rig.microphone.answer(true);
+        wait_for(
+            || rig.streams.inputs().last() == Some(&true),
+            "input opened after the grant",
+        );
+        wait_for(|| rig.handle.snapshot().warning.is_none(), "notice cleared");
+        assert_eq!(rig.handle.snapshot().config.input, rig.with_input.input);
+        assert_sounding(&rig.handle);
+        rig.runtime.shutdown().expect("shutdown");
+    }
+
+    #[test]
+    fn a_refused_prompt_leaves_the_output_running_without_the_input() {
+        let mut rig = microphone_rig(microphone::Permission::Undetermined);
+        applied(&rig.handle, &rig.with_input);
+        wait_for(
+            || rig.handle.snapshot().warning.as_deref() == Some(microphone::WAITING),
+            "waiting notice",
+        );
+        rig.microphone.answer(false);
+        wait_for(
+            || rig.handle.snapshot().warning.as_deref() == Some(DENIED),
+            "denied notice",
+        );
+        assert_sounding(&rig.handle);
+        assert!(!rig.streams.inputs().contains(&true));
+        let snapshot = rig.handle.snapshot();
+        assert_eq!(snapshot.config.input, rig.with_input.input);
+        assert!(snapshot.error.is_none());
+        // Disabling the input clears the notice and asks nothing.
+        let mut disabled = rig.with_input.clone();
+        disabled.input = None;
+        applied(&rig.handle, &disabled);
+        wait_for(|| rig.handle.snapshot().warning.is_none(), "notice cleared");
+        assert_eq!(rig.microphone.requests.load(Ordering::SeqCst), 1);
+        rig.runtime.shutdown().expect("shutdown");
+    }
+
+    #[test]
+    fn an_input_already_denied_is_never_opened_or_asked_for_until_allowed_in_settings() {
+        let mut rig = microphone_rig(microphone::Permission::Denied);
+        applied(&rig.handle, &rig.with_input);
+        wait_for(
+            || rig.handle.snapshot().warning.as_deref() == Some(DENIED),
+            "denied notice",
+        );
+        assert_eq!(rig.microphone.requests.load(Ordering::SeqCst), 0);
+        assert_eq!(rig.streams.inputs(), [false, false]);
+        assert_sounding(&rig.handle);
+
+        // Allowed later in System Settings: the next device poll opens it.
+        rig.microphone.set(microphone::Permission::Granted);
+        wait_for(
+            || rig.streams.inputs().last() == Some(&true),
+            "input opened after access was allowed",
+        );
+        wait_for(|| rig.handle.snapshot().warning.is_none(), "notice cleared");
+        assert_eq!(rig.microphone.requests.load(Ordering::SeqCst), 0);
+        rig.runtime.shutdown().expect("shutdown");
+    }
+
+    #[test]
+    fn the_microphone_notice_takes_the_list_warnings_place_and_hands_it_back() {
+        let (commands, _) = bounded(4);
+        let microphone = FakeMicrophone::new(microphone::Permission::Denied);
+        let mut gate = Gate::new(Box::new(microphone.clone()), commands);
+        let mut snapshot = running_inventory_snapshot();
+        let mut list = InventoryWarnings::default();
+        list.unresponsive(&["Steam Streaming Speakers".into()]);
+        list.publish(&mut snapshot);
+        let busy = snapshot.warning.clone();
+
+        let mut config = Config::initial();
+        config.input = snapshot.devices.default_output.clone();
+        let negotiated = negotiate(&config, &snapshot.devices).expect("duplex");
+        let admitted = gate.admit(&negotiated);
+        assert!(admitted.input.is_none() && admitted.input_stream_channels == 0);
+        assert_eq!(admitted.config.input, config.input);
+        gate.publish(&mut snapshot, list.reported.as_ref());
+        list.publish(&mut snapshot);
+        assert_eq!(snapshot.warning.as_deref(), Some(DENIED));
+
+        // Another owner's warning is never replaced.
+        snapshot.warning = Some("The original session was preserved.".into());
+        gate.publish(&mut snapshot, list.reported.as_ref());
+        assert_eq!(
+            snapshot.warning.as_deref(),
+            Some("The original session was preserved.")
+        );
+        snapshot.warning = None;
+        gate.publish(&mut snapshot, list.reported.as_ref());
+        assert_eq!(snapshot.warning.as_deref(), Some(DENIED));
+
+        microphone.set(microphone::Permission::Granted);
+        assert!(gate.recheck());
+        assert_eq!(gate.admit(&negotiated).input, negotiated.input);
+        gate.publish(&mut snapshot, list.reported.as_ref());
+        list.publish(&mut snapshot);
+        assert_eq!(snapshot.warning, busy, "the list warning returns");
     }
 }

@@ -585,3 +585,40 @@ whose name never answers), MIDI that stalls and recovers, and the control loop
 with a blocked device (MIDI published first, commands handled, the list published
 naming the device, the apply answered, shutdown under two seconds).
 
+## K-MICROPHONE-WAIT. Ask for the microphone without waiting; the output plays meanwhile
+
+2026-10-19, CA-72 issue 112, after K-DEVICE-LISTING. With listing fixed, choosing
+an external input on macOS showed the microphone prompt as it should, but opening
+the input waited for the answer: the control thread sat in `CreateIOProcID`
+(`_TellServerAboutStreamUsage`, a reply from the audio server that comes only once
+the user answers), the same call as the original hang. Sound stopped and the
+settings read STARTING until the prompt was answered.
+
+The control thread now reads the permission before opening an input, without
+waiting (`+[AVCaptureDevice authorizationStatusForMediaType:]`, audio). Granted:
+the input opens as before. Not determined: one `requestAccessForMediaType:
+completionHandler:`, which returns at once; the output opens alone and the status
+reads "Waiting for microphone permission… The external input starts once access is
+allowed."; the answer comes back as a command, and an Allow reopens the streams
+with the input. Denied or restricted: no input is opened or asked for; the output
+runs and the status reads "Microphone access denied. Allow <app> in System Settings
+› Privacy & Security › Microphone." The choice of input is kept in the settings and
+the saved session, not cleared as a failed open clears it: the user did choose it,
+and once access is allowed (the prompt, or later in System Settings, which each
+two-second device poll reads) it opens without choosing again. The request is made
+only for an app whose Info.plist has `NSMicrophoneUsageDescription`, since without
+it macOS ends the process; an unbundled binary keeps the plain open. The
+Objective-C calls and the completion handler (a global block, by the Blocks ABI)
+are written against the runtime directly, so the kit takes no new crates. Other
+platforms are unchanged.
+
+To test it, opening streams is now a trait the control loop holds (`Streams`,
+cpal's or a fake that renders on a thread of its own) beside the device lists and
+the permission (`Hardware`). `Snapshot::output_frames` counts rendered frames, so a
+test, and a check of an installed app, can see sound continue. Tests: the prompt
+pending (output rendering, the notice, the input not opened, a second apply asks
+nothing more), then allowed (the input opens, the notice clears); the prompt
+refused (output running, the denial, the choice kept, disabling the input clears
+it); already denied (never asked, never opened; allowed later in settings, the
+next poll opens it); and the notice taking the device-list warning's place and
+handing it back, never covering another owner's warning.

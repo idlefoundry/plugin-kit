@@ -83,6 +83,23 @@ Input opening/permission failures try the output configuration with external
 input disabled and report that effective configuration. Missing MIDI ports are
 warnings; other ports and audio remain usable.
 
+On macOS every input device is behind the microphone permission, and opening one
+while the system's prompt waits for an answer waits with it. So before opening an
+input the control thread reads the permission without waiting (AVFoundation's
+`authorizationStatusForMediaType:`). Granted: the input opens. Never asked: it
+asks with `requestAccessForMediaType:completionHandler:`, which returns at once,
+opens the output alone and shows "Waiting for microphone permission…"; the answer
+returns to the control thread as a command, and an Allow reopens the streams with
+the input. Refused or restricted: the output runs alone and the status says
+"Microphone access denied. Allow <app> in System Settings › Privacy & Security ›
+Microphone." (the app as its Info.plist names it). The chosen input stays in the
+settings and the saved session either way, and each device poll reads the
+permission again, so access allowed later in System Settings opens it. Only an
+app whose Info.plist has `NSMicrophoneUsageDescription` asks (without it macOS
+would end the process); a binary run from a terminal opens the input as before.
+Other platforms open the input directly. `Snapshot::output_frames` counts the
+frames the output has rendered, so a caller can see sound running.
+
 Device inventories refresh every two seconds, on workers the control thread
 never waits on: one lists audio devices, one MIDI ports, and each publishes on
 its own. A device that keeps the audio worker waiting longer than 1.5 seconds is
@@ -93,7 +110,7 @@ long it blocks. Settings are first applied once both inventories have answered.
 Listing reads capabilities only: on macOS, CoreAudio properties (stream
 configuration, nominal and available sample rates, buffer frame size range), with
 no AudioUnit or IO proc, so it never asks for microphone access. That is asked
-only when an external input is chosen and opened. On macOS the MIDI worker runs
+only when an external input is chosen, and never by opening it (above). On macOS the MIDI worker runs
 its run loop for an instant before each poll: CoreMIDI announces new and removed
 endpoints there, and without it a controller plugged in after launch never
 appeared. Selected identities must match one

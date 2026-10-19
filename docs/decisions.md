@@ -552,3 +552,32 @@ unchanged. A channel-gated cold processor proves restored state/configuration ar
 available while preparation is still pending; the test failed before this change.
 All 43 standalone tests and strict workspace Clippy pass locally. The consumer's
 native two-launch restoration check remains required on its updated artifact.
+
+## K-DEVICE-LISTING. List devices by property reads, off the control thread
+
+2026-10-19, CA-72 issue 112. On the owner's Mac the standalone opened with no audio
+devices and no MIDI ports, and no error. The control thread listed devices with
+cpal, whose CoreAudio probes made a HAL AudioUnit and set its device to read the
+buffer frame size range; setting the device creates an IO proc, and for five
+virtual drivers (Immersed, Steam Streaming Microphone and Speakers, Virtual Desktop
+Mic and Speakers) that call never returned. Nothing was published and MIDI was
+never polled. After a reboot cleared the drivers, the owner found the second face
+of the same cause: the app asked for microphone access at every launch, with
+external input disabled. "I don't think we should be requesting access for that
+unless the user specified that they were wanting to use the microphone input."
+The input probe's AudioUnit had input enabled.
+
+cpal's macOS probes now read `kAudioDevicePropertyBufferFrameSizeRange` as a device
+property (third_party/cpal change 3); only building a stream makes an AudioUnit,
+and a hidden counter lets a Mac test prove that listing makes none. Devices are
+listed by a worker with a 1.5-second limit per device, MIDI by a worker of its own;
+the control loop only reads their results. A device past the limit is named in
+`Devices::unresponsive` and the status, and skipped by later rounds while its call
+is still blocked. WASAPI and ALSA listing open no stream (an audio client is
+activated; the PCM is opened non-blocking for its parameters) and ask for no
+permission; the same limit bounds them. Opening a chosen device describes only
+devices of its name. Tests: a fake host whose devices block (one, five, and one
+whose name never answers), MIDI that stalls and recovers, and the control loop
+with a blocked device (MIDI published first, commands handled, the list published
+naming the device, the apply answered, shutdown under two seconds).
+

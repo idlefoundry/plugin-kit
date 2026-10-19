@@ -34,13 +34,67 @@ pub struct Devices {
     pub default_output: Option<DeviceId>,
     pub default_sample_rate: u32,
     pub midi_inputs: Vec<String>,
+    /// Audio devices that did not answer within the listing's time limit. They are
+    /// left out of `audio` until they answer; the status names them.
+    pub unresponsive: Vec<String>,
 }
 
-/// MIDI errors keep the last valid MIDI inventory while healthy audio discovery
-/// remains available. This is never constructed or read by an audio callback.
-pub(crate) struct Enumeration {
-    pub devices: Devices,
-    pub midi_error: Option<String>,
+/// One audio listing round, published by the control thread into `Devices`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct AudioListing {
+    pub backend: String,
+    pub audio: Vec<DeviceInfo>,
+    pub default_output_name: Option<String>,
+    pub unresponsive: Vec<String>,
+}
+
+impl AudioListing {
+    /// The default output is found by name among the devices that answered, so it
+    /// is never described twice; a default that did not answer is None.
+    pub(crate) fn publish_into(self, devices: &mut Devices) {
+        let default = self.default_output_name.as_ref().and_then(|name| {
+            let mut named = self.audio.iter().filter(|d| d.id.name == *name);
+            named.next().filter(|_| named.next().is_none())
+        });
+        devices.default_output = default.map(|d| d.id.clone());
+        devices.default_sample_rate = default.map_or(48000, |d| d.default_sample_rate);
+        devices.backend = self.backend;
+        devices.audio = self.audio;
+        devices.unresponsive = self.unresponsive;
+    }
+}
+
+/// What a listing round asks of an audio backend: cpal's host, or a test's fake
+/// whose devices may never answer. Every call may block; the listing worker makes
+/// them, never the control thread.
+pub(crate) trait AudioSource {
+    type Device;
+    fn backend(&self) -> String;
+    fn devices(&self) -> Result<Vec<Self::Device>, String>;
+    fn default_output_name(&self) -> Option<String>;
+    fn name(&self, device: &Self::Device) -> Result<String, String>;
+    fn describe(&self, device: &Self::Device, name: String) -> Result<DeviceInfo, String>;
+}
+
+pub(crate) struct CpalSource(pub cpal::Host);
+
+impl AudioSource for CpalSource {
+    type Device = cpal::Device;
+    fn backend(&self) -> String {
+        format!("{:?}", self.0.id())
+    }
+    fn devices(&self) -> Result<Vec<cpal::Device>, String> {
+        Ok(self.0.devices().map_err(|e| e.to_string())?.collect())
+    }
+    fn default_output_name(&self) -> Option<String> {
+        self.0.default_output_device().and_then(|d| d.name().ok())
+    }
+    fn name(&self, device: &cpal::Device) -> Result<String, String> {
+        device.name().map_err(|e| e.to_string())
+    }
+    fn describe(&self, device: &cpal::Device, name: String) -> Result<DeviceInfo, String> {
+        describe_named(device, name)
+    }
 }
 
 /// A successful MIDI client lives until the owning control thread shuts down.
@@ -68,7 +122,7 @@ impl<C> MidiDiscovery<C> {
 }
 
 impl MidiDiscovery {
-    fn poll(&mut self, app_id: &str) -> Result<Vec<String>, String> {
+    pub(crate) fn poll(&mut self, app_id: &str) -> Result<Vec<String>, String> {
         self.poll_with(
             || midir::MidiInput::new(app_id).map_err(|e| format!("Could not initialize MIDI: {e}")),
             |input| {
@@ -236,7 +290,15 @@ fn capability(c: cpal::SupportedStreamConfigRange) -> StreamCapability {
 }
 
 pub(crate) fn describe(device: &cpal::Device) -> Result<DeviceInfo, String> {
-    let name = device.name().map_err(|e| e.to_string())?;
+    describe_named(device, device.name().map_err(|e| e.to_string())?)
+}
+
+/// Reads capabilities only. On macOS, cpal's probes are CoreAudio property reads
+/// (third_party/cpal change 3): no AudioUnit or IO proc is made, so listing an
+/// input never asks for microphone access. Elsewhere, WASAPI activates an audio
+/// client and ALSA opens the PCM non-blocking to read its hardware parameters;
+/// neither starts a stream. The listing worker's time limit bounds them all.
+fn describe_named(device: &cpal::Device, name: String) -> Result<DeviceInfo, String> {
     let inputs = device
         .supported_input_configs()
         .map(|c| c.map(capability).collect::<Vec<_>>())
@@ -267,42 +329,6 @@ pub(crate) fn describe(device: &cpal::Device) -> Result<DeviceInfo, String> {
             .default_output_config()
             .map(|c| c.sample_rate().0)
             .unwrap_or(48000),
-    })
-}
-
-pub(crate) fn enumerate(
-    host: &cpal::Host,
-    app_id: &str,
-    midi: &mut MidiDiscovery,
-) -> Result<Enumeration, String> {
-    let mut audio = Vec::new();
-    for device in host.devices().map_err(|e| e.to_string())? {
-        if let Ok(info) = describe(&device) {
-            audio.push(info);
-        }
-    }
-    let default = host.default_output_device();
-    let default_output = default
-        .as_ref()
-        .and_then(|d| describe(d).ok())
-        .map(|d| d.id);
-    let default_sample_rate = default
-        .and_then(|d| d.default_output_config().ok())
-        .map(|c| c.sample_rate().0)
-        .unwrap_or(48000);
-    let (midi_inputs, midi_error) = match midi.poll(app_id) {
-        Ok(names) => (names, None),
-        Err(error) => (Vec::new(), Some(error)),
-    };
-    Ok(Enumeration {
-        devices: Devices {
-            backend: format!("{:?}", host.id()),
-            audio,
-            default_output,
-            default_sample_rate,
-            midi_inputs,
-        },
-        midi_error,
     })
 }
 
@@ -409,6 +435,7 @@ pub(crate) mod tests {
             default_output: Some(id),
             default_sample_rate: 48000,
             midi_inputs: vec!["Keys".into()],
+            unresponsive: Vec::new(),
         }
     }
     #[test]

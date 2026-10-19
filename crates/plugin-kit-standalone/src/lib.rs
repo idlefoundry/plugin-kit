@@ -1,6 +1,7 @@
 //! Reusable standalone services. Device access is confined to the control thread;
 //! the callback owns its processor and only uses bounded queues and atomics.
 mod devices;
+mod listing;
 mod persistence;
 mod routing;
 mod runtime;

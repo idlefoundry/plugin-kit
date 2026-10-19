@@ -1,4 +1,5 @@
-use crate::devices::{Enumeration, MidiDiscovery, describe, enumerate};
+use crate::devices::{AudioListing, CpalSource, MidiDiscovery, describe};
+use crate::listing::{DEVICE_LIMIT, Listed, Lister, MidiPoller};
 use crate::routing::{CAPTURE_CAPACITY, InputResampler, MIDI_PER_BLOCK, MidiRouter, pack_frame};
 use crate::{
     AppHandle, AppOptions, AudioBlock, AudioProcessor, Command, Config, Devices, MidiEvent,
@@ -95,10 +96,44 @@ impl Drop for HostRuntime {
     }
 }
 
+/// Where the control thread learns of devices: workers it never waits on.
+pub(crate) struct Discovery {
+    pub(crate) audio: Lister,
+    pub(crate) midi: MidiPoller,
+}
+
+impl Discovery {
+    fn system(app_id: &str) -> Self {
+        let app_id = app_id.to_owned();
+        Self {
+            audio: Lister::new(|| Ok(CpalSource(cpal::default_host())), DEVICE_LIMIT),
+            midi: MidiPoller::spawn(
+                move || {
+                    let mut discovery = MidiDiscovery::default();
+                    move || discovery.poll(&app_id)
+                },
+                DEVICE_LIMIT,
+            ),
+        }
+    }
+}
+
 pub fn spawn(
     processor: Box<dyn AudioProcessor>,
     state: Option<Arc<dyn SessionState>>,
     options: AppOptions,
+) -> Result<HostRuntime, String> {
+    let discovery = options
+        .device_access
+        .then(|| Discovery::system(&options.app_id));
+    spawn_with(processor, state, options, discovery)
+}
+
+pub(crate) fn spawn_with(
+    processor: Box<dyn AudioProcessor>,
+    state: Option<Arc<dyn SessionState>>,
+    options: AppOptions,
+    discovery: Option<Discovery>,
 ) -> Result<HostRuntime, String> {
     std::fs::create_dir_all(&options.state_dir)
         .map_err(|e| format!("Unable to open standalone session directory: {e}"))?;
@@ -134,7 +169,15 @@ pub fn spawn(
     let worker = std::thread::Builder::new()
         .name(format!("{} standalone", options.app_id))
         .spawn(move || {
-            let result = control(processor, state, options, control_handle, rx, ready_tx);
+            let result = control(
+                processor,
+                state,
+                options,
+                discovery,
+                control_handle,
+                rx,
+                ready_tx,
+            );
             drop(instance_lock);
             let _ = finished_tx.try_send(result);
         })
@@ -282,10 +325,13 @@ impl Active {
     }
 }
 
+/// Only devices of the wanted name are described, so opening one device never
+/// waits on the others.
 fn find_device(host: &cpal::Host, id: &crate::DeviceId) -> Result<cpal::Device, String> {
     let mut matches = host
         .devices()
         .map_err(|e| e.to_string())?
+        .filter(|d| d.name().is_ok_and(|name| name == id.name))
         .filter(|d| describe(d).is_ok_and(|i| i.id == *id));
     let found = matches
         .next()
@@ -822,13 +868,14 @@ fn resolve_default_midi(config: &mut Config, devices: &Devices) -> bool {
 }
 
 #[derive(Default)]
-struct MidiWarnings {
+struct InventoryWarnings {
     empty: Option<String>,
     connection: Option<String>,
+    unresponsive: Option<String>,
     reported: Option<String>,
 }
 
-impl MidiWarnings {
+impl InventoryWarnings {
     fn inventory(&mut self, previous: usize, current: usize) {
         if current > 0 {
             self.empty = None;
@@ -843,6 +890,14 @@ impl MidiWarnings {
         self.connection = (!warnings.is_empty()).then(|| warnings.join(" "));
     }
 
+    fn unresponsive(&mut self, names: &[String]) {
+        self.unresponsive = match names {
+            [] => None,
+            [one] => Some(format!("{one} isn't responding.")),
+            [rest @ .., last] => Some(format!("{} and {last} aren't responding.", rest.join(", "))),
+        };
+    }
+
     fn publish(&mut self, snapshot: &mut Snapshot) {
         // Session/audio warnings have priority. Clear or replace only a warning
         // this MIDI owner actually published, including after successful retry.
@@ -851,8 +906,9 @@ impl MidiWarnings {
             return;
         }
         let warnings: Vec<_> = self
-            .empty
+            .unresponsive
             .iter()
+            .chain(self.empty.iter())
             .chain(self.connection.iter())
             .cloned()
             .collect();
@@ -861,32 +917,43 @@ impl MidiWarnings {
     }
 }
 
-fn publish_inventory(
+fn publish_audio(
+    snapshot: &mut Snapshot,
+    warnings: &mut InventoryWarnings,
+    listing: AudioListing,
+) -> bool {
+    let before = snapshot.devices.clone();
+    warnings.unresponsive(&listing.unresponsive);
+    listing.publish_into(&mut snapshot.devices);
+    warnings.publish(snapshot);
+    snapshot.devices != before
+}
+
+/// MIDI errors keep the last valid MIDI inventory; audio is published apart.
+fn publish_midi(
     snapshot: &mut Snapshot,
     midi_error: &mut Option<String>,
-    warnings: &mut MidiWarnings,
-    mut enumeration: Enumeration,
+    warnings: &mut InventoryWarnings,
+    result: Result<Vec<String>, String>,
 ) -> bool {
     if midi_error.is_some() && snapshot.error == *midi_error {
         snapshot.error = None;
     }
-    *midi_error = enumeration.midi_error.map(|error| {
+    *midi_error = result.as_ref().err().map(|error| {
         format!("MIDI discovery failed: {error} Previous inputs retained; Refresh retries.")
     });
-    if midi_error.is_some() {
-        enumeration
-            .devices
-            .midi_inputs
-            .clone_from(&snapshot.devices.midi_inputs);
-        ensure_midi_error(snapshot, midi_error);
-    } else {
-        warnings.inventory(
-            snapshot.devices.midi_inputs.len(),
-            enumeration.devices.midi_inputs.len(),
-        );
-    }
-    let changed = snapshot.devices != enumeration.devices;
-    snapshot.devices = enumeration.devices;
+    let changed = match result {
+        Ok(names) => {
+            warnings.inventory(snapshot.devices.midi_inputs.len(), names.len());
+            let changed = snapshot.devices.midi_inputs != names;
+            snapshot.devices.midi_inputs = names;
+            changed
+        }
+        Err(_) => {
+            ensure_midi_error(snapshot, midi_error);
+            false
+        }
+    };
     warnings.publish(snapshot);
     changed
 }
@@ -901,6 +968,7 @@ fn control(
     mut initial: Box<dyn AudioProcessor>,
     state: Option<Arc<dyn SessionState>>,
     options: AppOptions,
+    mut discovery: Option<Discovery>,
     handle: Arc<AppHandle>,
     commands: Receiver<Command>,
     ready: Sender<()>,
@@ -956,14 +1024,21 @@ fn control(
     let mut midi = Vec::new();
     let mut successful: Option<Config> = None;
     let mut active_output: Option<crate::DeviceId> = None;
-    let mut midi_discovery = MidiDiscovery::default();
     let mut midi_discovery_error = None;
-    let mut midi_warnings = MidiWarnings::default();
+    // Settings are first applied once both inventories have answered (or been
+    // reported as not answering), so a fresh start doesn't flash a missing device.
+    let mut audio_listed = false;
+    let mut midi_listed = false;
+    let mut midi_warnings = InventoryWarnings::default();
     let mut last_poll = Instant::now() - Duration::from_secs(2);
     let mut last_save = Instant::now();
     let mut need_apply = options.device_access;
     let mut stopped_by_user = false;
     let mut candidate = config.clone();
+    // Tracked applications waiting for the next attempt. Before the first
+    // inventory, a later application supersedes an earlier one; both learn the
+    // outcome of the attempt that was made.
+    let mut apply_replies = Vec::new();
     handle
         .snapshot
         .lock()
@@ -974,7 +1049,6 @@ fn control(
             break;
         }
         let command = commands.recv_timeout(Duration::from_millis(100)).ok();
-        let mut apply_reply = None;
         match command {
             Some(Command::Shutdown) => break,
             Some(Command::Apply(new)) => {
@@ -986,7 +1060,7 @@ fn control(
                 candidate = new;
                 need_apply = true;
                 stopped_by_user = false;
-                apply_reply = Some(reply);
+                apply_replies.push(reply);
             }
             Some(Command::Stop(error)) => {
                 handle.midi.panic();
@@ -1039,69 +1113,90 @@ fn control(
         }
         if last_poll.elapsed() >= Duration::from_secs(2) {
             last_poll = Instant::now();
-            if let Some(host) = &host {
-                match enumerate(host, &options.app_id, &mut midi_discovery) {
-                    Ok(enumeration) => {
-                        let changed = {
-                            let mut snapshot = handle
-                                .snapshot
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            publish_inventory(
-                                &mut snapshot,
-                                &mut midi_discovery_error,
-                                &mut midi_warnings,
-                                enumeration,
-                            )
-                        };
-                        // A server/driver can reconnect with exactly the same
-                        // device identity. Retry after each successful poll while
-                        // stopped, rather than requiring a device-list change.
-                        if should_retry_after_poll(active.is_some(), stopped_by_user, need_apply) {
-                            candidate = config.clone();
-                            need_apply = true;
-                        }
-                        if changed && active.is_some() {
-                            let devices = handle.snapshot().devices;
-                            if !need_apply && resolve_default_midi(&mut config, &devices) {
-                                successful = Some(config.clone());
-                                handle
-                                    .snapshot
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                    .config = config.clone();
-                                handle.metrics.save_requested.store(true, Ordering::Release);
-                            }
-                            if !need_apply
-                                && config.output.is_none()
-                                && devices.default_output != active_output
-                            {
-                                candidate = config.clone();
-                                need_apply = true;
-                            } else if negotiate(&config, &devices).is_err() {
-                                handle.metrics.failed.store(true, Ordering::Release);
-                            }
-                        }
-                        // Healthy polling also retries a failed MIDI connection
-                        // with unchanged identity. Existing bindings stay open.
-                        if active.is_some() && !need_apply && midi_discovery_error.is_none() {
-                            midi_warnings.connections(reconcile_midi(
-                                &config,
-                                &options.app_id,
-                                &handle,
-                                &mut midi,
-                            ));
-                        }
-                    }
-                    Err(e) => {
-                        // ALSA can stop delivering callbacks when its server
-                        // disappears without issuing CPAL's stream error callback.
-                        if active.is_some() {
-                            handle.metrics.failed.store(true, Ordering::Release);
-                        }
-                        set_status(&handle, Phase::Error, Some(e));
-                    }
+            if let Some(discovery) = &mut discovery {
+                discovery.audio.request();
+                discovery.midi.request();
+            }
+        }
+        let mut listed_audio = false;
+        let mut published = false;
+        let mut changed = false;
+        if let Some(discovery) = &mut discovery {
+            match discovery.audio.poll() {
+                Some(Listed::Round(listing)) => {
+                    audio_listed = true;
+                    listed_audio = true;
+                    published = true;
+                    let mut snapshot = handle
+                        .snapshot
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    changed |= publish_audio(&mut snapshot, &mut midi_warnings, listing);
                 }
+                Some(Listed::Failed(e)) => {
+                    audio_listed = true;
+                    // ALSA can stop delivering callbacks when its server
+                    // disappears without issuing CPAL's stream error callback.
+                    if active.is_some() {
+                        handle.metrics.failed.store(true, Ordering::Release);
+                    }
+                    set_status(&handle, Phase::Error, Some(e));
+                }
+                None => {}
+            }
+            if let Some(result) = discovery.midi.poll() {
+                midi_listed = true;
+                published = true;
+                let mut snapshot = handle
+                    .snapshot
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                changed |= publish_midi(
+                    &mut snapshot,
+                    &mut midi_discovery_error,
+                    &mut midi_warnings,
+                    result,
+                );
+            }
+        }
+        if published {
+            // A server/driver can reconnect with exactly the same device
+            // identity. Retry after each successful audio listing while
+            // stopped, rather than requiring a device-list change.
+            if listed_audio
+                && should_retry_after_poll(active.is_some(), stopped_by_user, need_apply)
+            {
+                candidate = config.clone();
+                need_apply = true;
+            }
+            if changed && active.is_some() {
+                let devices = handle.snapshot().devices;
+                if !need_apply && resolve_default_midi(&mut config, &devices) {
+                    successful = Some(config.clone());
+                    handle
+                        .snapshot
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .config = config.clone();
+                    handle.metrics.save_requested.store(true, Ordering::Release);
+                }
+                if !need_apply && config.output.is_none() && devices.default_output != active_output
+                {
+                    candidate = config.clone();
+                    need_apply = true;
+                } else if negotiate(&config, &devices).is_err() {
+                    handle.metrics.failed.store(true, Ordering::Release);
+                }
+            }
+            // Healthy polling also retries a failed MIDI connection with
+            // unchanged identity. Existing bindings stay open.
+            if active.is_some() && !need_apply && midi_discovery_error.is_none() {
+                midi_warnings.connections(reconcile_midi(
+                    &config,
+                    &options.app_id,
+                    &handle,
+                    &mut midi,
+                ));
             }
         }
         if handle.metrics.failed.swap(false, Ordering::AcqRel) {
@@ -1127,7 +1222,7 @@ fn control(
             handle.metrics.sample_rate.store(0, Ordering::Relaxed);
             handle.metrics.frames.store(0, Ordering::Relaxed);
         }
-        if need_apply {
+        if need_apply && (discovery.is_none() || (audio_listed && midi_listed)) {
             need_apply = false;
             let mut accepted = false;
             let devices = handle.snapshot().devices;
@@ -1205,7 +1300,7 @@ fn control(
                     Some(e),
                 );
             }
-            if let Some(reply) = apply_reply {
+            if !apply_replies.is_empty() {
                 let outcome = if accepted {
                     Ok(config.clone())
                 } else {
@@ -1214,7 +1309,9 @@ fn control(
                     }))
                 };
                 // A dismissed UI drops its receiver; completion never blocks.
-                let _ = reply.try_send(outcome);
+                for reply in apply_replies.drain(..) {
+                    let _ = reply.try_send(outcome.clone());
+                }
             }
         }
         if last_save.elapsed() >= Duration::from_secs(5)
@@ -1276,6 +1373,36 @@ fn control(
 mod tests {
     use super::*;
 
+    /// One audio listing and one MIDI poll together, as the old single
+    /// enumeration published them.
+    struct Enumeration {
+        devices: Devices,
+        midi_error: Option<String>,
+    }
+
+    fn publish_inventory(
+        snapshot: &mut Snapshot,
+        midi_error: &mut Option<String>,
+        warnings: &mut InventoryWarnings,
+        enumeration: Enumeration,
+    ) -> bool {
+        let devices = enumeration.devices;
+        let listing = AudioListing {
+            backend: devices.backend,
+            default_output_name: devices.default_output.map(|id| id.name),
+            audio: devices.audio,
+            unresponsive: devices.unresponsive,
+        };
+        let audio = publish_audio(snapshot, warnings, listing);
+        let midi = publish_midi(
+            snapshot,
+            midi_error,
+            warnings,
+            enumeration.midi_error.map_or(Ok(devices.midi_inputs), Err),
+        );
+        audio || midi
+    }
+
     fn running_inventory_snapshot() -> Snapshot {
         Snapshot {
             config: Config::initial(),
@@ -1294,7 +1421,7 @@ mod tests {
     #[test]
     fn successful_midi_retry_clears_only_the_owned_unavailable_warning() {
         let mut snapshot = running_inventory_snapshot();
-        let mut warnings = MidiWarnings::default();
+        let mut warnings = InventoryWarnings::default();
         warnings.connections(vec!["MIDI input 'Keys' is unavailable.".into()]);
         warnings.publish(&mut snapshot);
         assert!(
@@ -1341,7 +1468,7 @@ mod tests {
         let mut empty = connected.clone();
         empty.midi_inputs.clear();
         let mut error = None;
-        let mut warnings = MidiWarnings::default();
+        let mut warnings = InventoryWarnings::default();
         assert!(publish_inventory(
             &mut snapshot,
             &mut error,
@@ -1397,7 +1524,7 @@ mod tests {
         snapshot.warning = Some("Original session warning".into());
         let config = snapshot.config.clone();
         let mut discovery_error = None;
-        let mut midi_warnings = MidiWarnings::default();
+        let mut midi_warnings = InventoryWarnings::default();
         let mut discovered = crate::devices::tests::inventory(8);
         discovered.midi_inputs.clear();
         assert!(publish_inventory(
@@ -1840,6 +1967,92 @@ mod tests {
         ready.expect("restored session must not wait for cold DSP preparation");
         assert!(restored_before_release);
         assert_eq!(config_before_release, config);
+    }
+
+    #[test]
+    fn a_stalled_audio_device_never_holds_midi_commands_or_the_list() {
+        use crate::listing::tests::{FakeDevice, FakeSource, info, lister};
+        let limit = Duration::from_secs(1);
+        let (release, until) = bounded::<()>(0);
+        let source = FakeSource::new(
+            vec![
+                FakeDevice::blocks(info("Steam Streaming Speakers", 0, 2), until),
+                FakeDevice::answers(info("Mic", 2, 0)),
+            ],
+            Some("Steam Streaming Speakers"),
+        );
+        let discovery = Discovery {
+            audio: lister(&source, limit),
+            midi: MidiPoller::spawn(|| || Ok(vec!["Keys".to_string()]), limit),
+        };
+        let dir = tempfile::tempdir().expect("temp");
+        let start = Instant::now();
+        let mut runtime = spawn_with(
+            Box::new(Fake),
+            None,
+            AppOptions {
+                app_id: "Test".into(),
+                state_dir: dir.path().into(),
+                device_access: true,
+            },
+            Some(discovery),
+        )
+        .expect("spawn");
+        let handle = runtime.handle();
+        runtime.wait_ready(Duration::from_secs(1)).expect("ready");
+
+        // MIDI is published while the audio listing still waits on the device,
+        // and commands are still handled: a save request writes the session.
+        handle.save().expect("save");
+        while handle.snapshot().devices.midi_inputs.is_empty() {
+            assert!(start.elapsed() < limit, "MIDI waited for the audio listing");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(handle.snapshot().devices.audio.is_empty());
+        let receipt = handle.apply_tracked(Config::initial()).expect("queued");
+        while !dir.path().join("session.json").exists() {
+            assert!(start.elapsed() < limit, "the control loop stalled");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        // The list is published without the device, which the status names.
+        let snapshot = loop {
+            let snapshot = handle.snapshot();
+            if !snapshot.devices.unresponsive.is_empty() {
+                break snapshot;
+            }
+            assert!(start.elapsed() < limit * 3, "the list was never published");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(snapshot.devices.unresponsive, ["Steam Streaming Speakers"]);
+        let listed: Vec<_> = snapshot.devices.audio.iter().map(|d| &d.id.name).collect();
+        assert_eq!(listed, ["Mic"]);
+        assert_eq!(snapshot.devices.default_output, None);
+        assert_eq!(snapshot.devices.midi_inputs, ["Keys"]);
+        assert_eq!(
+            snapshot.warning.as_deref(),
+            Some("Steam Streaming Speakers isn't responding.")
+        );
+
+        // The queued settings are answered: no output answered, so they fail.
+        let outcome = loop {
+            match receipt.try_result() {
+                Ok(None) => {}
+                outcome => break outcome,
+            }
+            assert!(start.elapsed() < limit * 3, "the apply was never answered");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let error = outcome.expect_err("no output");
+        assert!(error.contains("No audio output"), "{error}");
+
+        let closing = Instant::now();
+        runtime
+            .shutdown()
+            .expect("shutdown while the device is still blocked");
+        assert!(closing.elapsed() < Duration::from_secs(2));
+        assert_eq!(source.blocked_calls.load(Ordering::SeqCst), 1);
+        drop(release);
     }
 
     #[test]

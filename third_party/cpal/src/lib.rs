@@ -1,3 +1,6 @@
+// Modified by Idle Foundry: the CoreAudio AudioUnit count, for tests. See
+// third_party/cpal/PATCHES.md.
+
 //! # How to use cpal
 //!
 //! Here are some concepts cpal exposes:
@@ -179,6 +182,14 @@ use wasm_bindgen::prelude::*;
 mod error;
 mod host;
 pub mod platform;
+
+/// Idle Foundry (PATCHES.md change 3): the CoreAudio AudioUnits this process has
+/// made, each of which creates an IO proc on its device. Listing devices makes none.
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub fn coreaudio_audio_units_made() -> usize {
+    host::coreaudio::audio_units_made()
+}
 mod samples_formats;
 pub mod traits;
 

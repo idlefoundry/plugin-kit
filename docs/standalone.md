@@ -83,7 +83,17 @@ Input opening/permission failures try the output configuration with external
 input disabled and report that effective configuration. Missing MIDI ports are
 warnings; other ports and audio remain usable.
 
-Device inventories refresh every two seconds. Selected identities must match one
+Device inventories refresh every two seconds, on workers the control thread
+never waits on: one lists audio devices, one MIDI ports, and each publishes on
+its own. A device that keeps the audio worker waiting longer than 1.5 seconds is
+left out and named in `Devices::unresponsive` and the status ("Steam Streaming
+Speakers isn't responding."); the round starts again on a new worker, which skips
+that device until its call returns, so a blocked device holds one thread however
+long it blocks. Settings are first applied once both inventories have answered.
+Listing reads capabilities only: on macOS, CoreAudio properties (stream
+configuration, nominal and available sample rates, buffer frame size range), with
+no AudioUnit or IO proc, so it never asks for microphone access. That is asked
+only when an external input is chosen and opened. Selected identities must match one
 device exactly; absent or duplicate identities cannot silently select a different
 interface. Device loss releases notes, tears down the streams and keeps the
 editor alive. A successful inventory poll retries a stopped configuration even
@@ -125,7 +135,9 @@ the destination open.
   latency. The `xruns` snapshot member counts reported stream errors; CPAL 0.15
   does not expose a reliable cross-platform underrun counter.
 - OS driver calls for enumeration, stream construction/destruction and MIDI
-  disconnect cannot be forcibly interrupted safely. The caller's shutdown wait
+  disconnect cannot be forcibly interrupted safely. Enumeration is bounded by
+  leaving a blocked worker behind (at most eight at once); opening the chosen
+  device still happens on the control thread. The caller's shutdown wait
   is bounded, but a malfunctioning driver may leave a detached control thread
   until the OS operation returns. Normal shutdown does not wait for a callback.
 - Hardware playback, input, permission, hotplug and driver behavior still need

@@ -576,7 +576,11 @@ the control loop only reads their results. A device past the limit is named in
 is still blocked. WASAPI and ALSA listing open no stream (an audio client is
 activated; the PCM is opened non-blocking for its parameters) and ask for no
 permission; the same limit bounds them. Opening a chosen device describes only
-devices of its name. Tests: a fake host whose devices block (one, five, and one
+devices of its name. On macOS the MIDI worker runs its run loop for an instant
+before each poll: CoreMIDI serves endpoint notifications on the run loop of the
+thread that made the process's first client, and with none served (as on the old
+control thread) a source published after launch was never listed; on the owner's
+Mac a long-lived client saw it only after one run-loop pass. Tests: a fake host whose devices block (one, five, and one
 whose name never answers), MIDI that stalls and recovers, and the control loop
 with a blocked device (MIDI published first, commands handled, the list published
 naming the device, the apply answered, shutdown under two seconds).

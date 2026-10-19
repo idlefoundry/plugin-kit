@@ -93,7 +93,10 @@ long it blocks. Settings are first applied once both inventories have answered.
 Listing reads capabilities only: on macOS, CoreAudio properties (stream
 configuration, nominal and available sample rates, buffer frame size range), with
 no AudioUnit or IO proc, so it never asks for microphone access. That is asked
-only when an external input is chosen and opened. Selected identities must match one
+only when an external input is chosen and opened. On macOS the MIDI worker runs
+its run loop for an instant before each poll: CoreMIDI announces new and removed
+endpoints there, and without it a controller plugged in after launch never
+appeared. Selected identities must match one
 device exactly; absent or duplicate identities cannot silently select a different
 interface. Device loss releases notes, tears down the streams and keeps the
 editor alive. A successful inventory poll retries a stopped configuration even

@@ -110,11 +110,35 @@ impl Discovery {
             midi: MidiPoller::spawn(
                 move || {
                     let mut discovery = MidiDiscovery::default();
-                    move || discovery.poll(&app_id)
+                    move || {
+                        #[cfg(target_os = "macos")]
+                        core_midi_notifications();
+                        discovery.poll(&app_id)
+                    }
                 },
                 DEVICE_LIMIT,
             ),
         }
+    }
+}
+
+/// CoreMIDI learns of new and removed endpoints through notifications served on
+/// the run loop of the thread that made the process's first client, here the MIDI
+/// worker. Without a pass of that run loop the port list never changes, so a
+/// controller plugged in after launch would never appear.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+fn core_midi_notifications() {
+    use std::ffi::c_void;
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        static kCFRunLoopDefaultMode: *const c_void;
+        fn CFRunLoopRunInMode(mode: *const c_void, seconds: f64, after_one: u8) -> i32;
+    }
+    // SAFETY: the mode is CoreFoundation's own constant string, and running the
+    // calling thread's run loop for zero seconds serves only what is pending.
+    unsafe {
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.0, 0);
     }
 }
 

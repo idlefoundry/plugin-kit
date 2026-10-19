@@ -1,6 +1,8 @@
 //! Reusable standalone services. Device access is confined to the control thread;
 //! the callback owns its processor and only uses bounded queues and atomics.
 mod devices;
+mod listing;
+mod microphone;
 mod persistence;
 mod routing;
 mod runtime;
@@ -152,6 +154,8 @@ pub struct Snapshot {
     pub xruns: u64,
     pub midi_overflows: u64,
     pub input_overflows: u64,
+    /// Frames the output has rendered since launch; it advances while sound runs.
+    pub output_frames: u64,
 }
 
 impl Snapshot {
@@ -169,6 +173,8 @@ pub(crate) enum Command {
     Stop(String),
     Refresh,
     Save,
+    /// The user's answer to the microphone prompt.
+    Microphone(bool),
     Shutdown,
 }
 

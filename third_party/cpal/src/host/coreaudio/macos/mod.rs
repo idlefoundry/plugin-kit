@@ -1,5 +1,6 @@
 // Modified by Idle Foundry: CoreAudio stream-lifetime and output-probing
-// backports, plus compiler cleanup. See third_party/cpal/PATCHES.md.
+// backports, configuration probes by property reads only, plus compiler cleanup.
+// See third_party/cpal/PATCHES.md.
 
 extern crate core_foundation_sys;
 extern crate coreaudio;
@@ -37,6 +38,7 @@ use std::mem;
 use std::os::raw::c_char;
 use std::ptr::null;
 use std::slice;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -299,8 +301,9 @@ impl Device {
             let ranges: *mut AudioValueRange = ranges.as_mut_ptr() as *mut _;
             let ranges: &'static [AudioValueRange] = slice::from_raw_parts(ranges, n_ranges);
 
-            let audio_unit = audio_unit_from_device(self, scope == kAudioObjectPropertyScopeInput)?;
-            let buffer_size = get_io_buffer_frame_size_range(&audio_unit)?;
+            // A property read (PATCHES.md change 3): an AudioUnit here would give the
+            // device an IO proc only to read this range.
+            let buffer_size = device_buffer_frame_size_range(self.audio_device_id)?;
 
             // Collect the supported formats for the device.
             let mut fmts = vec![];
@@ -401,8 +404,8 @@ impl Device {
                 }
             };
 
-            let audio_unit = audio_unit_from_device(self, scope == kAudioObjectPropertyScopeInput)?;
-            let buffer_size = get_io_buffer_frame_size_range(&audio_unit)?;
+            let buffer_size = device_buffer_frame_size_range(self.audio_device_id)
+                .map_err(DefaultStreamConfigError::from)?;
 
             let config = SupportedStreamConfig {
                 sample_rate: SampleRate(asbd.mSampleRate as _),
@@ -503,7 +506,50 @@ where
     Ok(())
 }
 
+/// The AudioUnits this process has made (PATCHES.md change 3). Each one is given a
+/// device, which creates an IO proc on it: for an input, that asks for microphone
+/// access; a driver that never answers holds the caller forever. Listing devices
+/// must leave this unchanged; only building a stream may raise it.
+static AUDIO_UNITS_MADE: AtomicUsize = AtomicUsize::new(0);
+
+#[doc(hidden)]
+pub fn audio_units_made() -> usize {
+    AUDIO_UNITS_MADE.load(Ordering::SeqCst)
+}
+
+/// The device's own buffer frame size range, read as a property of the device.
+fn device_buffer_frame_size_range(
+    device: AudioDeviceID,
+) -> Result<SupportedBufferSize, BackendSpecificError> {
+    let property_address = AudioObjectPropertyAddress {
+        mSelector: kAudioDevicePropertyBufferFrameSizeRange,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMaster,
+    };
+    let mut range = AudioValueRange {
+        mMinimum: 0.0,
+        mMaximum: 0.0,
+    };
+    let mut data_size = mem::size_of::<AudioValueRange>() as u32;
+    let status = unsafe {
+        AudioObjectGetPropertyData(
+            device,
+            &property_address as *const _,
+            0,
+            null(),
+            &mut data_size as *mut _,
+            &mut range as *mut _ as *mut _,
+        )
+    };
+    check_os_status(status)?;
+    Ok(SupportedBufferSize::Range {
+        min: range.mMinimum as u32,
+        max: range.mMaximum as u32,
+    })
+}
+
 fn audio_unit_from_device(device: &Device, input: bool) -> Result<AudioUnit, coreaudio::Error> {
+    AUDIO_UNITS_MADE.fetch_add(1, Ordering::SeqCst);
     let output_type = if device.is_default && !input {
         coreaudio::audio_unit::IOType::DefaultOutput
     } else {

@@ -1,3 +1,6 @@
+// Modified by Idle Foundry: re-exports the AudioUnit count. See
+// third_party/cpal/PATCHES.md.
+
 extern crate coreaudio;
 
 use self::coreaudio::sys::{
@@ -23,6 +26,7 @@ pub use self::ios::{
 
 #[cfg(target_os = "macos")]
 pub use self::macos::{
+    audio_units_made,
     enumerate::{Devices, SupportedInputConfigs, SupportedOutputConfigs},
     Device, Host, Stream,
 };

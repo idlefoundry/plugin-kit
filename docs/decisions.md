@@ -553,6 +553,77 @@ available while preparation is still pending; the test failed before this change
 All 43 standalone tests and strict workspace Clippy pass locally. The consumer's
 native two-launch restoration check remains required on its updated artifact.
 
+## K-DEVICE-LISTING. List devices by property reads, off the control thread
+
+2026-10-19, CA-72 issue 112. On the owner's Mac the standalone opened with no audio
+devices and no MIDI ports, and no error. The control thread listed devices with
+cpal, whose CoreAudio probes made a HAL AudioUnit and set its device to read the
+buffer frame size range; setting the device creates an IO proc, and for five
+virtual drivers (Immersed, Steam Streaming Microphone and Speakers, Virtual Desktop
+Mic and Speakers) that call never returned. Nothing was published and MIDI was
+never polled. After a reboot cleared the drivers, the owner found the second face
+of the same cause: the app asked for microphone access at every launch, with
+external input disabled. "I don't think we should be requesting access for that
+unless the user specified that they were wanting to use the microphone input."
+The input probe's AudioUnit had input enabled.
+
+cpal's macOS probes now read `kAudioDevicePropertyBufferFrameSizeRange` as a device
+property (third_party/cpal change 3); only building a stream makes an AudioUnit,
+and a hidden counter lets a Mac test prove that listing makes none. Devices are
+listed by a worker with a 1.5-second limit per device, MIDI by a worker of its own;
+the control loop only reads their results. A device past the limit is named in
+`Devices::unresponsive` and the status, and skipped by later rounds while its call
+is still blocked. WASAPI and ALSA listing open no stream (an audio client is
+activated; the PCM is opened non-blocking for its parameters) and ask for no
+permission; the same limit bounds them. Opening a chosen device describes only
+devices of its name. On macOS the MIDI worker runs its run loop for an instant
+before each poll: CoreMIDI serves endpoint notifications on the run loop of the
+thread that made the process's first client, and with none served (as on the old
+control thread) a source published after launch was never listed; on the owner's
+Mac a long-lived client saw it only after one run-loop pass. Tests: a fake host whose devices block (one, five, and one
+whose name never answers), MIDI that stalls and recovers, and the control loop
+with a blocked device (MIDI published first, commands handled, the list published
+naming the device, the apply answered, shutdown under two seconds).
+
+## K-MICROPHONE-WAIT. Ask for the microphone without waiting; the output plays meanwhile
+
+2026-10-19, CA-72 issue 112, after K-DEVICE-LISTING. With listing fixed, choosing
+an external input on macOS showed the microphone prompt as it should, but opening
+the input waited for the answer: the control thread sat in `CreateIOProcID`
+(`_TellServerAboutStreamUsage`, a reply from the audio server that comes only once
+the user answers), the same call as the original hang. Sound stopped and the
+settings read STARTING until the prompt was answered.
+
+The control thread now reads the permission before opening an input, without
+waiting (`+[AVCaptureDevice authorizationStatusForMediaType:]`, audio). Granted:
+the input opens as before. Not determined: one `requestAccessForMediaType:
+completionHandler:`, which returns at once; the output opens alone and the status
+reads "Waiting for microphone permission… The external input starts once access is
+allowed."; the answer comes back as a command, and an Allow reopens the streams
+with the input. Denied or restricted: no input is opened or asked for; the output
+runs and the status reads "Microphone access denied. Allow <app> in System Settings
+› Privacy & Security › Microphone." The choice of input is kept in the settings and
+the saved session, not cleared as a failed open clears it: the user did choose it,
+and once access is allowed (the prompt, or later in System Settings, which each
+two-second device poll reads) it opens without choosing again. The request is made
+only for an app whose Info.plist has `NSMicrophoneUsageDescription`, since without
+it macOS ends the process; an unbundled binary keeps the plain open. The
+Objective-C calls and the completion handler (a global block, by the Blocks ABI)
+are written against the runtime directly, so the kit takes no new crates. Other
+platforms are unchanged.
+
+To test it, opening streams is now a trait the control loop holds (`Streams`,
+cpal's or a fake that renders on a thread of its own) beside the device lists and
+the permission (`Hardware`). `Snapshot::output_frames` counts rendered frames, so a
+test, and a check of an installed app, can see sound continue. Tests: the prompt
+pending (output rendering, the notice, the input not opened, a second apply asks
+nothing more), then allowed (the input opens, the notice clears); the prompt
+refused (output running, the denial, the choice kept, disabling the input clears
+it); already denied (never asked, never opened; allowed later in settings, the
+next poll opens it); and the notice taking the device-list warning's place and
+handing it back, never covering another owner's warning.
+
+
 ## K-AU-PITCH-BEND. A channel pitch wheel reaches the instrument through the Audio Unit
 
 2026-10-17: the CA-72's issue 43 (its R-AU-PITCH-BEND, 3647201): in GarageBand the AU ignored

@@ -26,6 +26,12 @@ pub trait GuiContext: Send + Sync + 'static {
     /// TODO: Host->Plugin resizing has not been implemented yet
     fn request_resize(&self) -> bool;
 
+    /// Whether resize requests report their final result through Editor::resize_result.
+    /// When true, request_resize returning true can mean the host's answer is queued.
+    fn resize_response_will_follow(&self) -> bool {
+        false
+    }
+
     /// Inform the host a parameter will be automated. Create a [`ParamSetter`] and use
     /// [`ParamSetter::begin_set_parameter()`] instead for a safe, user friendly API.
     ///

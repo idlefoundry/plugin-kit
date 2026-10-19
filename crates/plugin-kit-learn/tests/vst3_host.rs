@@ -12,6 +12,10 @@
 //! the keyboard from a plug-in's window and gives it its keys this way) reaches the editor, the
 //! host told whether the editor took it (the CA-72's `docs/decisions.md` R-KEYS).
 //!
+//! And a resize the editor asks for reports the host's answer to the editor, at once or, on
+//! Linux, when the host's run loop delivers the queued request (change 17: a refusal had left
+//! the host's frame and the editor at different sizes; the CA-72's `docs/decisions.md` R72).
+//!
 //! It is here because this is the kit's one crate on nih-plug, with the VST3 wrapper switched
 //! on for its tests alone. The plug-in is a probe: its editor opens no window but keeps the
 //! context the wrapper gives it, the one a plug-in's editor sets its parameters through, and
@@ -25,12 +29,15 @@ use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_void};
 use std::num::NonZeroU32;
 use std::ptr::null_mut;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use nih_plug::prelude::*;
 use nih_plug::wrapper::vst3::vst3_sys;
 use vst3_sys::base::{IPluginBase, IPluginFactory, kResultFalse, kResultOk, tresult};
-use vst3_sys::gui::IPlugView;
+#[cfg(target_os = "linux")]
+use vst3_sys::gui::linux::{IEventHandler, IRunLoop, ITimerHandler};
+use vst3_sys::gui::{IPlugFrame, IPlugView, ViewRect};
 use vst3_sys::utils::{SharedVstPtr, StaticVstPtr};
 use vst3_sys::vst::{
     AudioBusBuffers, IAudioProcessor, IComponent, IComponentHandler, IEditController,
@@ -71,6 +78,7 @@ thread_local! {
     /// The keys the host gave the probe's editor's view, and whether its editor takes them.
     static KEYS: RefCell<Vec<nih_plug::editor::HostKey>> = const { RefCell::new(Vec::new()) };
     static TAKES_KEYS: Cell<bool> = const { Cell::new(false) };
+    static RESIZES: RefCell<Vec<(u64, bool)>> = const { RefCell::new(Vec::new()) };
 }
 
 #[derive(Params)]
@@ -163,6 +171,12 @@ impl Editor for ProbeEditor {
     }
     fn size(&self) -> (u32, u32) {
         (100, 100)
+    }
+    fn resize_request(&self) -> (u64, (u32, u32)) {
+        (99, self.size())
+    }
+    fn resize_result(&self, id: u64, accepted: bool) {
+        RESIZES.with(|r| r.borrow_mut().push((id, accepted)));
     }
     fn set_scale_factor(&self, _factor: f32) -> bool {
         false
@@ -600,4 +614,126 @@ fn a_key_the_host_gives_the_view_reaches_the_editor() {
             key(Some('\r'), 4, 0, false),
         ]
     );
+}
+
+/// The host's actual frame and (on Linux) its GUI-thread run loop. Handler addresses are
+/// borrowed only while the view owns and registers the handler; unregister clears them.
+#[cfg_attr(target_os = "linux", VST3(implements(IPlugFrame, IRunLoop)))]
+#[cfg_attr(not(target_os = "linux"), VST3(implements(IPlugFrame)))]
+struct ResizeFrame {
+    accepted: Arc<AtomicBool>,
+    // VST3's allocation macro requires every field on every platform.
+    #[allow(dead_code)] // Only Linux registers a run-loop handler.
+    handler: Arc<Mutex<Option<(usize, i32)>>>,
+}
+
+impl IPlugFrame for ResizeFrame {
+    unsafe fn resize_view(
+        &self,
+        _view: SharedVstPtr<dyn IPlugView>,
+        size: *mut ViewRect,
+    ) -> tresult {
+        // SAFETY: the wrapper passed its own rectangle for this call.
+        let size = unsafe { &*size };
+        assert_eq!((size.right, size.bottom), (100, 100));
+        if self.accepted.load(Ordering::Relaxed) {
+            kResultOk
+        } else {
+            kResultFalse
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl IRunLoop for ResizeFrame {
+    unsafe fn register_event_handler(
+        &self,
+        handler: SharedVstPtr<dyn IEventHandler>,
+        fd: i32,
+    ) -> tresult {
+        *self.handler.lock().unwrap() = Some((handler.upgrade().unwrap().as_ptr() as usize, fd));
+        kResultOk
+    }
+    unsafe fn unregister_event_handler(
+        &self,
+        _handler: SharedVstPtr<dyn IEventHandler>,
+    ) -> tresult {
+        *self.handler.lock().unwrap() = None;
+        kResultOk
+    }
+    unsafe fn register_timer(&self, _timer: SharedVstPtr<dyn ITimerHandler>, _ms: u64) -> tresult {
+        kResultFalse
+    }
+    unsafe fn unregister_timer(&self, _timer: SharedVstPtr<dyn ITimerHandler>) -> tresult {
+        kResultOk
+    }
+}
+
+#[test]
+fn a_resize_reports_the_hosts_answer_or_queues_to_its_gui_thread() {
+    let i = Instance::new(Host::Silent);
+    RESIZES.with(|r| r.borrow_mut().clear());
+    let accepted = Arc::new(AtomicBool::new(false));
+    let frame: VstPtr<dyn IPlugFrame> =
+        com(ResizeFrame::allocate(accepted.clone(), Arc::default()));
+    // SAFETY: the host's frame lives until after the view removes it.
+    unsafe {
+        assert_eq!(i.view.set_frame(frame.as_ptr().cast()), kResultOk);
+    }
+    assert!(i.context.resize_response_will_follow());
+    // Rust's test thread is not AppKit's main thread. macOS must queue this request;
+    // the main-thread host validators exercise its eventual GUI response.
+    if cfg!(target_os = "macos") {
+        assert!(i.context.request_resize());
+        assert!(RESIZES.with(|r| r.borrow().is_empty()));
+        return;
+    }
+    assert!(!i.context.request_resize());
+    accepted.store(true, Ordering::Relaxed);
+    assert!(i.context.request_resize());
+    assert_eq!(
+        RESIZES.with(|r| r.borrow().clone()),
+        [(99, false), (99, true)]
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_queued_resize_reports_refusal_on_the_hosts_run_loop() {
+    let i = Instance::new(Host::Silent);
+    RESIZES.with(|r| r.borrow_mut().clear());
+    let handler = Arc::new(Mutex::new(None));
+    let frame: VstPtr<dyn IPlugFrame> = com(ResizeFrame::allocate(
+        Arc::new(AtomicBool::new(false)),
+        handler.clone(),
+    ));
+    // SAFETY: the frame and its registered handler live throughout this test.
+    unsafe {
+        assert_eq!(i.view.set_frame(frame.as_ptr().cast()), kResultOk);
+    }
+    let context = i.context.clone();
+    assert!(
+        std::thread::spawn(move || context.request_resize())
+            .join()
+            .unwrap(),
+        "queuing succeeded"
+    );
+    assert!(
+        RESIZES.with(|r| r.borrow().is_empty()),
+        "the answer is still pending"
+    );
+    let (address, fd) = handler
+        .lock()
+        .unwrap()
+        .expect("the host registered its handler");
+    // SAFETY: the borrowed interface is registered and the view remains alive; called on
+    // the host's main thread after its socket was signalled, exactly as IRunLoop does.
+    unsafe {
+        let event: SharedVstPtr<dyn IEventHandler> = pointer(address as *mut c_void);
+        event
+            .upgrade()
+            .expect("registered handler")
+            .on_fd_is_set(fd);
+    }
+    assert_eq!(RESIZES.with(|r| r.borrow().clone()), [(99, false)]);
 }

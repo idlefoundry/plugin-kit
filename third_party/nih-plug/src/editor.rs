@@ -45,6 +45,16 @@ pub trait Editor: Send {
     /// scaling factor to get the actual physical screen pixels.
     fn size(&self) -> (u32, u32);
 
+    /// Identifies a resize request and its logical size. An editor with queued requests can
+    /// use a monotonic id to distinguish repeated sizes and separate window openings.
+    fn resize_request(&self) -> (u64, (u32, u32)) {
+        (0, self.size())
+    }
+
+    /// The host's answer, on its GUI thread, possibly later than the editor's request.
+    /// This callback must not manipulate a GUI owned by another thread.
+    fn resize_result(&self, _request: u64, _accepted: bool) {}
+
     /// Set the DPI scaling factor, if supported. The plugin APIs don't make any guarantees on when
     /// this is called, but for now just assume it will be the first function that gets called
     /// before creating the editor. If this is set, then any windows created by this editor should

@@ -622,3 +622,44 @@ refused (output running, the denial, the choice kept, disabling the input clears
 it); already denied (never asked, never opened; allowed later in settings, the
 next poll opens it); and the notice taking the device-list warning's place and
 handing it back, never covering another owner's warning.
+
+
+## K-AU-PITCH-BEND. A channel pitch wheel reaches the instrument through the Audio Unit
+
+2026-10-17: the CA-72's issue 43 (its R-AU-PITCH-BEND, 3647201): in GarageBand the AU ignored
+the pitch wheel. clap-wrapper's AU adapter turned channel pitch bend into per-note tuning
+whenever the plugin preferred CLAP notes, though the port took MIDI too; nih-plug makes that
+`PolyTuning`, which the CA-72 and the CA-74 never read (they follow `MidiPitchBend`), and the
+conversion fixed the range at two semitones. clap-wrapper's change 6 (`PATCHES.md`) keeps the
+MIDI bytes when the port supports MIDI or MPE; a CLAP-only port keeps the tuning.
+
+`third_party/clap-wrapper/tests/auv2-midi.cpp`, the adapter on its own event list, is built
+and run by each plug-in's `scripts/auv2.sh` with its component. Measured with the CA-74's
+(Highstead's, Apple silicon, macOS 27, in-process through the public AU API, its own test
+code): before the change the adapter test failed for CLAP with MIDI and CLAP with MPE, and a
+full bend up at MIDI BEND RANGE 2 moved A4 by +2.1 cents; after it, every adapter case passed
+and the wheel moved A4 by +200.1 and -202.5 cents at range 2, +703.7 and -700.3 at 7, under 3
+at 0, from MIDI bytes and MIDI 1 and MIDI 2 event lists alike. Not tried: a host (GarageBand,
+Logic), a physical controller.
+
+## K-RESIZE-RESULT. A host's answer to a resize reaches the editor (nih-plug change 17)
+
+2026-10-17: the CA-72's R72 (its nih-plug change 14, b86a394), for the CA-74. VST3's
+`request_resize()` returned success before the host answered, always on Linux (the request is
+queued onto the host's `IRunLoop`), so a host that then refused left its frame and the editor's
+window at different sizes. The frame now reports the host's answer, with the id of the request
+the editor made (`Editor::resize_request()` and `resize_result()`), and the context says that
+an answer will follow (`resize_response_will_follow()`). Each editor keeps its own record of
+which request is which and what to restore; one that overrides neither hook is unchanged.
+`crates/plugin-kit-learn/tests/vst3_host.rs`: `a_resize_reports_the_hosts_answer_or_queues_to_its_gui_thread`
+and, on Linux, `a_queued_resize_reports_refusal_on_the_hosts_run_loop`, as the CA-72 has them.
+
+## K-CURSOR. The pointer's look on macOS (baseview change 7)
+
+2026-10-17: the CA-72's R-MAC-FIXES (eb2f705), for the CA-74's grip (its R-SIZE). baseview's
+macOS `Window::set_mouse_cursor` was `todo!()`: a call panicked, so an editor could not show the
+resize arrows over its grip on the Mac. `src/macos/cursor.rs` maps each `MouseCursor` to an
+`NSCursor` (the diagonal arrows to AppKit's own window corners'); the window keeps the look
+asked for and shows it again as the pointer moves and as AppKit updates it. Windows and Linux
+are unchanged. The four macOS files are the CA-72's to the byte (they were the same before the
+change), built and tried there on macOS 27; not built in the kit on the Mac this time.

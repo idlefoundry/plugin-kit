@@ -38,8 +38,8 @@ use std::mem;
 use std::os::raw::c_char;
 use std::ptr::null;
 use std::slice;
-use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 

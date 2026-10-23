@@ -221,6 +221,16 @@ K-CA72-0.2.8), its changes 15 and 16, here 18 and 19:
     without the marker (`cargo test --manifest-path third_party/nih-plug/Cargo.toml --lib
     visibility_tests`, in the kit's CI); with the marker ignored, two of its three fail.
 
+19. **A VST3 host's brightness arrives as brightness** (the CA-72's R-MPE, its issue 81,
+    `af0b1f3`). `NoteExpressionController::translate_event`
+    (`src/wrapper/vst3/note_expressions.rs`) turned `kBrightnessTypeID` into
+    `NoteEvent::PolyExpression` and `kExpressionTypeID` into `PolyBrightness`, the opposite of
+    its own `translate_event_reverse` and of the CLAP wrapper, so a VST3 host's MPE timbre
+    (brightness) reached a plugin as expression. They now map each to its own. The module's
+    own test, `brightness_and_expression_each_map_to_their_own` (`cargo test --manifest-path
+    third_party/nih-plug/Cargo.toml --features vst3 --lib note_expressions`, in the kit's CI),
+    fails with the two mapped as before.
+
 To move to a newer upstream commit, copy its `Cargo.toml`, `LICENSE`, `README.md`, `src`
-and `nih_plug_derive` here and apply the eighteen changes again, unless upstream has fixed them.
+and `nih_plug_derive` here and apply the nineteen changes again, unless upstream has fixed them.
 Then update the commit above, and `nih_plug_xtask`'s `rev` in each plug-in's workspace `Cargo.toml`.

@@ -3,9 +3,9 @@
 // (scripts/auv2/tests/occlusion.cpp there), on the real CLAP proxy dispatcher, without an editor,
 // an audio device or a host. It needs only clap_proxy.cpp and the CLAP headers, on any system:
 //
-//   c++ -std=c++17 -DCLAP_WRAPPER_VERSION='"0.16.0"' -Isrc -Iinclude -I../clap/include \
-//       tests/native-window-occlusion.cpp src/clap_proxy.cpp src/detail/clap/fsutil.cpp \
-//       -o occlusion-test (and -ldl on Linux)
+//   c++ -std=c++17 -DCLAP_WRAPPER_VERSION='"0.16.0"' -Isrc -Iinclude -Ilibs/fmt \
+//       -I../clap/include tests/native-window-occlusion.cpp src/clap_proxy.cpp \
+//       src/detail/clap/fsutil.cpp -o occlusion-test (and -ldl on Linux)
 //
 // as the kit's CI builds and runs it, or with a plug-in's component (its scripts/auv2).
 #include "clap_proxy.h"

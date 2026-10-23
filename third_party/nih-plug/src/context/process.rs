@@ -25,6 +25,11 @@ pub trait ProcessContext<P: Plugin> {
     fn take_standalone_panic(&mut self) -> bool {
         false
     }
+    /// Opaque UI identity captured with this callback's standalone panic. Read before
+    /// consuming the panic; other wrappers and untagged resets return None.
+    fn standalone_panic_token(&self) -> Option<u64> {
+        None
+    }
 
     /// Execute a task on a background thread using `[Plugin::task_executor]`. This allows you to
     /// defer expensive tasks for later without blocking either the process function or the GUI

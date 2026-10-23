@@ -231,6 +231,21 @@ K-CA72-0.2.8), its changes 15 and 16, here 18 and 19:
     third_party/nih-plug/Cargo.toml --features vst3 --lib note_expressions`, in the kit's CI),
     fails with the two mapped as before.
 
+Three more from the CA-72's 0.2.2 to 0.2.8 that changed the production standalone (16) without
+a number of their own there (`docs/decisions.md` K-CA72-0.2.8):
+
+20. **A standalone panic's token reaches the instrument with its block.** The kit's
+    `plugin-kit-standalone` captures a tagged PANIC's token with the block's panic
+    (`AudioProcessor::panic_token`, K-PANIC-TOKEN), but this adapter dropped it, so an
+    instrument could not tell which of its editor's PANIC requests a block's reset answered.
+    The adapter now keeps the token given for the next block and offers it, with that block's
+    panic only, through the additive `ProcessContext::standalone_panic_token()` (None in every
+    other context); it is taken at each block, a rejected one too, so it never reaches a later
+    block. An instrument reads it before `take_standalone_panic()`. The CA-72's e43d39c
+    (2026-10-14), which it tests through its own instrument;
+    `src/wrapper/standalone/production_tests.rs` here drives the adapter as the runtime does
+    (`--features standalone-production --lib production`), and fails without the token passed.
+
 To move to a newer upstream commit, copy its `Cargo.toml`, `LICENSE`, `README.md`, `src`
-and `nih_plug_derive` here and apply the nineteen changes again, unless upstream has fixed them.
+and `nih_plug_derive` here and apply the twenty changes again, unless upstream has fixed them.
 Then update the commit above, and `nih_plug_xtask`'s `rev` in each plug-in's workspace `Cargo.toml`.

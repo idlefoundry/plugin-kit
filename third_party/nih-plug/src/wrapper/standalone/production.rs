@@ -238,6 +238,7 @@ pub struct Processor<P: Plugin> {
     input_right: Vec<f32>,
     rate: f32,
     initialized: bool,
+    panic_token: Option<u64>,
     init_executor: Arc<Mutex<TaskExecutor<P>>>,
     // Each callback-owned producer has exactly one consumer on the GUI or
     // background thread. There is no CAS retry loop in these callback queues.
@@ -285,6 +286,7 @@ where
                 input_right: Vec::new(),
                 rate: 48_000.0,
                 initialized: false,
+                panic_token: None,
                 init_executor,
                 gui_tasks: RefCell::new(gui_tasks),
                 background_tasks: RefCell::new(background_tasks),
@@ -375,7 +377,13 @@ where
         Ok(())
     }
 
+    fn panic_token(&mut self, token: Option<u64>) {
+        self.panic_token = token;
+    }
+
     fn process(&mut self, block: AudioBlock<'_>) {
+        // Consume even on an invalid block, and never retain metadata across direct calls.
+        let panic_token = self.panic_token.take();
         process_wrapper(|| {
             let frames = block.left.len();
             if !self.initialized || block.right.len() != frames || frames > self.input_left.len() {
@@ -434,6 +442,7 @@ where
                 session: &self.session,
                 midi: block.midi.iter(),
                 panic_channel: block.panic.then_some(0),
+                panic_token: block.panic.then_some(panic_token).flatten(),
                 transport: Transport::new(self.rate),
                 gui_tasks: &self.gui_tasks,
                 background_tasks: &self.background_tasks,
@@ -498,6 +507,7 @@ struct Processing<'a, P: Plugin> {
     session: &'a Session<P>,
     midi: std::slice::Iter<'a, plugin_kit_standalone::MidiEvent>,
     panic_channel: Option<u8>,
+    panic_token: Option<u64>,
     transport: Transport,
     gui_tasks: &'a RefCell<rtrb::Producer<P::BackgroundTask>>,
     background_tasks: &'a RefCell<rtrb::Producer<P::BackgroundTask>>,
@@ -511,6 +521,9 @@ where
     }
     fn take_standalone_panic(&mut self) -> bool {
         self.panic_channel.take().is_some()
+    }
+    fn standalone_panic_token(&self) -> Option<u64> {
+        self.panic_token
     }
     fn execute_background(&self, task: P::BackgroundTask) {
         if let Ok(mut producer) = self.background_tasks.try_borrow_mut() {
@@ -797,3 +810,7 @@ where
         .map_err(|_| "The standalone task worker failed.".to_owned())?;
     result
 }
+
+#[cfg(test)]
+#[path = "production_tests.rs"]
+mod tests;

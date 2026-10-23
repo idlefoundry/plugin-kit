@@ -5,8 +5,9 @@ use std::ptr;
 use std::rc::Rc;
 
 use cocoa::appkit::{
-    NSApp, NSApplication, NSApplicationActivationPolicyRegular, NSBackingStoreBuffered,
-    NSPasteboard, NSView, NSWindow, NSWindowStyleMask,
+    NSApp, NSApplication, NSApplicationActivationPolicyRegular, NSBackingStoreBuffered, NSEvent,
+    NSEventModifierFlags, NSEventSubtype, NSEventType, NSPasteboard, NSView, NSWindow,
+    NSWindowStyleMask,
 };
 use cocoa::base::{id, nil, BOOL, NO, YES};
 use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSRect, NSSize, NSString};
@@ -106,6 +107,22 @@ impl WindowInner {
                 let app = self.ns_app.take();
                 if let Some(app) = app {
                     app.stop_(app);
+                    // `stop:` is seen as the event being handled ends; closed from an Apple
+                    // event (the Dock's Quit, logging out: PATCHES.md, change 11) or a timer,
+                    // `run` would wait for another first. This one ends it.
+                    let event: id = NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2_(
+                        nil,
+                        NSEventType::NSApplicationDefined,
+                        NSPoint::new(0.0, 0.0),
+                        NSEventModifierFlags::empty(),
+                        0.0,
+                        0,
+                        nil,
+                        NSEventSubtype::NSWindowExposedEventType,
+                        0,
+                        0,
+                    );
+                    app.postEvent_atStart_(event, NO);
                 }
             }
         }
@@ -196,6 +213,8 @@ impl<'a> Window<'a> {
 
         unsafe {
             app.setActivationPolicy_(NSApplicationActivationPolicyRegular);
+            // An application's menus, and its quitting its window's closing (change 11).
+            super::application::install(app, &options.title);
         }
 
         let scaling = match options.scale {
@@ -430,7 +449,12 @@ impl WindowState {
     unsafe fn setup_timer(window_state_ptr: *const WindowState) {
         extern "C" fn timer_callback(_: *mut __CFRunLoopTimer, window_state_ptr: *mut c_void) {
             unsafe {
-                let window_state = &*(window_state_ptr as *const WindowState);
+                // A reference of the frame's own: the handler may close the window in it (an
+                // application's quit asked for, change 11), which drops the view's, the last
+                // one of a window of its own.
+                let view_s = Rc::from_raw(window_state_ptr as *const WindowState);
+                let window_state = Rc::clone(&view_s);
+                let _ = Rc::into_raw(view_s);
 
                 window_state.trigger_frame();
             }

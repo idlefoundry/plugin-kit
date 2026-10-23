@@ -663,3 +663,110 @@ resize arrows over its grip on the Mac. `src/macos/cursor.rs` maps each `MouseCu
 asked for and shows it again as the pointer moves and as AppKit updates it. Windows and Linux
 are unchanged. The four macOS files are the CA-72's to the byte (they were the same before the
 change), built and tried there on macOS 27; not built in the kit on the Mac this time.
+
+## K-CA72-0.2.8. The CA-72's window, wrapper and Audio Unit fixes of its 0.2.6 to 0.2.8
+
+**The owner, 2026-10-22**, asked for the CA-74's first release, of the CA-72's fixes the kit
+lacked: "yes, you can push branches to the plugin kit and merge the 8 fixes once tests pass on all
+3 machines". The eight, as the CA-72 numbers them in its own copies (`third_party/` at its
+`5a8b3b9`): baseview's changes 8 to 12, nih-plug's 15 and 16 and clap-wrapper's 7.
+
+**Agent decisions, 2026-10-23** (the CA-74's kit worker; not separately approved):
+- **The whole trees compared, not only the numbered patches.** The CA-72's
+  `third_party/{baseview,nih-plug,clap-wrapper}` at `5a8b3b9` against the kit's at `bcc4d8f`,
+  every difference put in one of four kinds:
+  - *already here by another route:* everything up to baseview's 7, nih-plug's 17 and
+    clap-wrapper's 6 (the CA-72's nih-plug 12 to 14 are the kit's 14, 15 and 17, and its
+    comments number them so); nih-plug taking `plugin-kit-standalone` by path here, by git in
+    the CA-72; clap-wrapper's change 6 worded for any plug-in here. The kit alone has nih-plug's
+    12 and 13 (the MC-79's gate for background tasks), kept.
+  - *the eight:* baseview 8 to 12 under their own numbers; nih-plug 15 and 16 as 18 and 19
+    (the kit's 16 and 17 took theirs); clap-wrapper 7 under its own.
+  - *the CA-72's other changes to these crates in its 0.2.2 to 0.2.8, without a number there,*
+    ported as nih-plug 20 to 22: the token of a standalone's PANIC (`e43d39c`, the adapter's
+    half of K-PANIC-TOKEN, which the kit's adapter missed), the standalones' window (the
+    nih-plug half of R-WIN-STANDALONE, `8109b28`: the kit's baseview by path, without OpenGL,
+    and one scale on Windows) and quitting it (the nih-plug half of R-QUIT, `45d3104`).
+  - *for the CA-72's 0.3 alone, left out:* `TestProcessContext::set_transport` (its
+    arpeggiator, R-ARP) and `set_plugin_api` (its TEMPO as a modulation target, R-LFO);
+    `util::with_flush_to_zero` (its offline rendering for the MCP, R-REFERENCE-AUDIO); and the
+    lockfiles it commits for baseview and nih-plug, which the kit ignores.
+- **The code is the CA-72's,** applied from its commits; the files of the eight are its own
+  byte for byte, but for the comments that number the kit's changes, the kit's own changes
+  kept beside them, and the tests' new homes. The four baseview commits of a first worker,
+  stopped mid-task, were the CA-72's code; their `PATCHES.md` entries were missing and are
+  here, and the two macOS tests build in baseview's own edition (they had a per-target
+  edition, which Cargo deprecates).
+- **The tests come with the crates.** The CA-72 keeps most of them in its plug-in; those that
+  need only the crate are here, so that the kit's CI runs them: `tests/backing_scale.rs` and
+  `tests/mac_quit.rs` (macOS, on the main thread), the X11 identity tests, a Windows test of
+  change 9's styles, and `tests/x11_expose.rs` (an X server; in CI under Xvfb) in baseview;
+  `visibility_tests` (the CA-72's), the note expressions' test and
+  `src/wrapper/standalone/production_tests.rs` (the CA-72's test of the quit key, and new
+  ones of the token, the window's scale and the request to quit) in nih-plug;
+  `tests/native-window-occlusion.cpp` (the CA-72's) in clap-wrapper. Each change's test was
+  seen to fail without it where the change can be undone (`PATCHES.md`). The CA-72's tests of
+  its own editor stay with it.
+- **`cargo fmt --all` now reaches baseview and softbuffer** (nih-plug takes baseview by path,
+  baseview's macOS test softbuffer), so softbuffer's `cg.rs` has its imports in its own
+  edition's order, as the CA-72's has them.
+- **`mac_quit` is not run on the owner's Mac:** `open_blocking` puts a regular application's
+  window in front, and the rules for the owner's Mac forbid a window on its screen. GitHub's
+  macOS runner runs it.
+- **0.3.1 still:** the changes are fixes, and what is new (`native_window_occlusion_reliable`,
+  `standalone_panic_token`, `app_window`) is additive.
+
+**What a plug-in must do to have each:**
+- baseview 8 (a window moved to a screen of another scale) and 11 (a standalone's macOS menus
+  and quitting): nothing but take this commit; an application that opens its own window must
+  shut down after `open_blocking` returns, as nih-plug's adapters do.
+- baseview 9 (no frame to drag on Windows): nothing for a standalone opened by nih-plug
+  (change 21); its editor sizes the window, through the adapter, as before.
+- baseview 10 (Linux): call `baseview::set_application_class` with its desktop entry's
+  `StartupWMClass` before any window opens (the CA-72's `identify_standalone`); without it a
+  standalone's class is its first window's title, nih-plug's `Plugin::NAME`.
+- baseview 12 (X11): draw and present the whole frame at `WindowEvent::Damaged`, as change 2
+  asks on Windows: an editor that presents only what changed now gets one after each map and
+  resize under XWayland.
+- nih-plug 18 and clap-wrapper 7: an editor that skips presenting while its macOS window is
+  occluded asks `GuiContext::native_window_occlusion_reliable()` and keeps presenting where it
+  is false; the AU and the CLAP inside it are built from this one commit (a plug-in's
+  `scripts/auv2.sh` takes clap-wrapper from the kit's checkout), and its AU build may add
+  `tests/native-window-occlusion.cpp` beside `tests/auv2-midi.cpp`.
+- nih-plug 19: nothing; a plug-in that reads `PolyBrightness` or `PolyExpression` from VST3
+  now gets each as the host meant it.
+- nih-plug 20: a standalone that tags its PANIC (`AppHandle::panic_tagged`) reads
+  `ProcessContext::standalone_panic_token()` before `take_standalone_panic()` and acknowledges
+  only its own token.
+- nih-plug 21: a plug-in no longer builds a second baseview for its standalone, and must not
+  turn on baseview's `opengl` feature (the standalones' window options no longer name a
+  `gl_config`); on Windows its editor is told the monitor's scale (`set_scale_factor`) before
+  its first `size()`, and answers `size()` in logical pixels.
+- nih-plug 22: a standalone's editor that holds the keys on Linux hands Ctrl+Q over: where it
+  is the standalone and `app_window::quits(&key)`, it calls `app_window::request_quit()` before
+  any use of its own (the CA-72's editor does so ahead of its typing).
+
+**Evidence (omarchy, Linux, 2026-10-23, rustc 1.97.1, ngspice 47, load 4 to 6 from other
+work):** `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets -- -D warnings`;
+`cargo test --workspace --no-fail-fast` with `REQUIRE_NGSPICE=1` (127 passed, 3 ignored, run by
+hand); nih_plug_derive's 17; baseview's 6 identity tests, `x11_expose` (XWayland, its own
+windows off the screen, override-redirect) and Clippy with warnings denied; nih-plug's 9
+(`visibility_tests` 3, `note_expressions` 1, `production` 5) with `vst3,standalone-production`;
+both standalone features compiled together; the occlusion test. Failing without their change:
+`x11_expose` (timed out), two of `visibility_tests`' three, the note expressions' test, the
+token's test, the occlusion test ("remote wrapper capability was not dispatched").
+
+**Evidence (the Mac, macOS 27, M4 Pro, 2026-10-23, rustc 1.97.1; Live not running, load 11 to
+22 from the owner's work, nothing timed):** workspace Clippy with warnings denied and its tests
+(128 passed, 3 ignored); nih_plug_derive's 17; baseview's 6 identity tests and
+`backing_scale` (a window never shown); nih-plug's 9; the occlusion test, built against
+clap-wrapper's {fmt} headers. baseview's macOS backend fails Clippy with warnings denied, as
+upstream's always has (objc 0.2's `msg_send!` trips `unexpected_cfgs`, and one `ptr_eq` in
+upstream's `view.rs`); the kit does not check it.
+
+**Evidence (Windows 11, MSVC, 2026-10-23, rustc 1.97.1):** over SSH, workspace Clippy with
+warnings denied and its tests (125 passed, 3 ignored); nih_plug_derive's 17; nih-plug's 9 (the
+refit is Windows'); both standalone features compiled together; baseview's Clippy with warnings
+denied. In the signed-in session (a one-shot scheduled task), baseview's 10 library tests: the
+6 identity tests, change 6's three and change 9's styles, which fails with the two styles put
+back ("a frame to drag").

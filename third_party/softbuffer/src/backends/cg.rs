@@ -4,25 +4,26 @@ use crate::error::InitError;
 use crate::{Rect, SoftBufferError};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel};
-use objc2::{ClassType, MainThreadMarker, msg_send, sel};
+use objc2::{msg_send, sel, ClassType, MainThreadMarker};
 use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{
     CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage, CGImageAlphaInfo,
     CGImageByteOrderInfo, CGImageComponentInfo, CGImagePixelFormatInfo,
 };
 use objc2_foundation::{
-    NSDictionary, NSKeyValueChangeKey, NSKeyValueChangeNewKey, NSKeyValueObservingOptions,
-    NSNumber, NSObject, NSObjectNSKeyValueObserverRegistration, NSString, NSValue, ns_string,
+    ns_string, NSDictionary, NSKeyValueChangeKey, NSKeyValueChangeNewKey,
+    NSKeyValueObservingOptions, NSNumber, NSObject, NSObjectNSKeyValueObserverRegistration,
+    NSString, NSValue,
 };
-use objc2_quartz_core::{CALayer, CATransaction, kCAGravityTopLeft};
+use objc2_quartz_core::{kCAGravityTopLeft, CALayer, CATransaction};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawWindowHandle};
 
-use std::ffi::{CString, c_void};
+use std::ffi::{c_void, CString};
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::num::NonZeroU32;
 use std::ops::Deref;
-use std::ptr::{self, NonNull, slice_from_raw_parts_mut};
+use std::ptr::{self, slice_from_raw_parts_mut, NonNull};
 use std::sync::OnceLock;
 
 /// The class of our observers, this copy of softbuffer's own.

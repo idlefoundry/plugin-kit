@@ -1,4 +1,5 @@
 #include "clap_proxy.h"
+#include <clapwrapper/native-window-occlusion.h>
 #include "detail/clap/fsutil.h"
 #include <cstring>
 
@@ -552,8 +553,13 @@ void Plugin::param_request_flush()
 
 // Query an extension.
 // [thread-safe]
-const void *Plugin::clapExtension(const clap_host * /*host*/, const char *extension)
+const void *Plugin::clapExtension(const clap_host *host, const char *extension)
 {
+  if (!strcmp(extension, CLAP_HOST_NATIVE_WINDOW_OCCLUSION_UNRELIABLE))
+  {
+    static const clap_host_native_window_occlusion_unreliable_t marker{1};
+    return HostExt::self(host)->_parentHost->native_window_occlusion_reliable() ? nullptr : &marker;
+  }
   // TODO: add 'audio-ports' host-side extension
   if (!strcmp(extension, CLAP_EXT_LOG)) return &HostExt::log;
   if (!strcmp(extension, CLAP_EXT_PARAMS)) return &HostExt::params;

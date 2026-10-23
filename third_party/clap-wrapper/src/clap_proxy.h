@@ -67,6 +67,10 @@ class IHost
   virtual bool gui_request_show() = 0;
   virtual bool gui_request_hide() = 0;
 
+  // A wrapper may present the embedded view through a remote proxy instead of
+  // the NSWindow holding it. Other wrappers keep their existing native policy.
+  virtual bool native_window_occlusion_reliable() const { return true; }
+
   virtual bool register_timer(uint32_t period_ms, clap_id *timer_id) = 0;
   virtual bool unregister_timer(clap_id timer_id) = 0;
 

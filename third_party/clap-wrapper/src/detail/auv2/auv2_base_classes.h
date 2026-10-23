@@ -621,6 +621,9 @@ class WrapAsAUV2 : public ausdk::AUBase,
   {
     return false;
   }
+  // GarageBand and Logic may show this view through a remote AUHostingService
+  // proxy. The local NSWindow is not evidence that the presented view is hidden.
+  bool native_window_occlusion_reliable() const override { return false; }
   bool gui_request_resize(uint32_t width, uint32_t height) override
   {
     extern bool auv2shared_mm_request_resize(const clap_window_t *, uint32_t, uint32_t);

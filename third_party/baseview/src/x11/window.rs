@@ -233,18 +233,6 @@ impl<'a> Window<'a> {
                 .colormap(visual_info.color_map)
                 .border_pixel(0),
         )?;
-        xcb_connection.conn.map_window(window_id)?;
-
-        // Change window title
-        let title = options.title;
-        xcb_connection.conn.change_property8(
-            PropMode::REPLACE,
-            window_id,
-            AtomEnum::WM_NAME,
-            AtomEnum::STRING,
-            title.as_bytes(),
-        )?;
-
         xcb_connection.conn.change_property32(
             PropMode::REPLACE,
             window_id,
@@ -253,6 +241,17 @@ impl<'a> Window<'a> {
             &[xcb_connection.atoms.WM_DELETE_WINDOW],
         )?;
 
+        crate::x11_window_identity::set_identity_and_map(
+            &xcb_connection.conn,
+            window_id,
+            &options.title,
+            parent.is_none().then(|| {
+                crate::x11_window_identity::top_level_class(
+                    &options.title,
+                    crate::application_class(),
+                )
+            }),
+        )?;
         xcb_connection.conn.flush()?;
 
         // TODO: These APIs could use a couple tweaks now that everything is internal and there is

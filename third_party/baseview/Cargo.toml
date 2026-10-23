@@ -1,3 +1,7 @@
+[workspace]
+# Standalone tests must not enable Linux's native XCB feature on macOS or Windows.
+resolver = "3"
+
 [package]
 name = "baseview"
 version = "0.1.0"
@@ -22,6 +26,10 @@ opengl = ["uuid", "x11/glx"]
 [dependencies]
 keyboard-types = { version = "0.6.1", default-features = false }
 raw-window-handle = "0.5"
+
+[dev-dependencies]
+# Record the actual X11 requests in tests, including on macOS and Windows.
+x11rb = "0.13.0"
 
 [target.'cfg(target_os="linux")'.dependencies]
 x11rb = { version = "0.13.0", features = ["cursor", "resource_manager", "allow-unsafe-code"] }

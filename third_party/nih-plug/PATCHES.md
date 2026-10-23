@@ -267,6 +267,21 @@ a number of their own there (`docs/decisions.md` K-CA72-0.2.8):
     `a_resize_refits_the_apps_window_on_windows_alone`; the CA-72's test of its own window at
     five scales stays with it.
 
+22. **Every way of quitting the production standalone closes its window** (the CA-72's
+    R-QUIT, `45d3104`, 2026-10-19), as its close button does, so that
+    `run_with_midi_reset_scope` returns and shuts the app down as then (its session saved,
+    audio and MIDI stopped), and its caller's own way out follows. On macOS the menus and the
+    quit Apple event are baseview's change 11; on Windows Alt+F4 is the system's, which
+    baseview leaves to `DefWindowProcW`. On Linux `app_window::quits` is Ctrl+Q: the app's
+    window closes at it (`window.close()`, as `WM_DELETE_WINDOW` closes it), and an editor that
+    has the keys (X11 gives them to the window under the pointer) asks for it with
+    `app_window::request_quit`, which the window acts on at its next frame. The manifest takes
+    `keyboard-types` for the key, as baseview gives it, with the `standalone-production`
+    feature. `src/wrapper/standalone/production_tests.rs`:
+    `ctrl_q_quits_on_linux_and_no_other_key_does` (the CA-72's) and
+    `a_request_to_quit_is_seen_once`. The CA-72's tests that its editor hands Ctrl+Q over
+    before typing has it stay with it.
+
 To move to a newer upstream commit, copy its `Cargo.toml`, `LICENSE`, `README.md`, `src`
-and `nih_plug_derive` here and apply the twenty-one changes again, unless upstream has fixed them.
+and `nih_plug_derive` here and apply the twenty-two changes again, unless upstream has fixed them.
 Then update the commit above, and `nih_plug_xtask`'s `rev` in each plug-in's workspace `Cargo.toml`.

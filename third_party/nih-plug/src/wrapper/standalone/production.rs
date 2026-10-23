@@ -607,6 +607,12 @@ struct AppWindow<P: Plugin> {
 }
 impl<P: Plugin> WindowHandler for AppWindow<P> {
     fn on_frame(&mut self, window: &mut Window) {
+        // Quitting, as the editor asked (`app_window::request_quit`): the window closed as its
+        // close button closes it, and the app shut down as then, once `open_blocking` returns.
+        if app_window::quit_requested() {
+            window.close();
+            return;
+        }
         if self.session.error.swap(false, Ordering::AcqRel) {
             let _ = self.app.stop(
                 "The instrument could not process audio. Apply audio settings to restart it."
@@ -660,9 +666,17 @@ impl<P: Plugin> WindowHandler for AppWindow<P> {
                 .param_values_changed();
         }
     }
-    fn on_event(&mut self, _window: &mut Window, event: Event) -> EventStatus {
+    fn on_event(&mut self, window: &mut Window, event: Event) -> EventStatus {
         if app_window::refits(&event) {
             self.session.resize.store(true, Ordering::Release);
+        }
+        // (The window's own keys, where the editor's has not the keyboard: on X11, with the
+        // pointer outside the editor's.)
+        if let Event::Keyboard(key) = &event {
+            if app_window::quits(key) {
+                window.close();
+                return EventStatus::Captured;
+            }
         }
         EventStatus::Ignored
     }
@@ -811,10 +825,52 @@ where
 /// window no frame to drag and no maximise box, which the editor does not follow; and on
 /// Windows a resize from outside (Windows scales a window whose monitor's scale changes) is
 /// undone at the next frame, [`refits`].
+///
+/// And its quitting (R-QUIT): every way of quitting the app closes its window, as its close
+/// button does, so that the app shuts down as then, its session saved, once the window's
+/// `open_blocking` returns. On macOS the application's menus are baseview's (its change 11:
+/// Quit ⌘Q, the Dock's Quit and logging out close the window); on Windows Alt+F4 is the
+/// system's (baseview leaves Alt's keys to `DefWindowProcW`, which closes the window); on
+/// Linux Ctrl+Q is the app's own, [`quits`], which the editor gives the window
+/// ([`request_quit`]) before any use of its own.
 pub mod app_window {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use baseview::{Event, Size, Window, WindowEvent, WindowOpenOptions, WindowScalePolicy};
+    use keyboard_types::{Key, KeyState, KeyboardEvent, Modifiers};
 
     use crate::editor::Editor;
+
+    static QUIT: AtomicBool = AtomicBool::new(false);
+
+    /// Whether `key` is this system's shortcut for quitting an application, where the app's
+    /// windows are to act on it: Ctrl+Q on Linux (none on macOS, whose ⌘Q is the main menu's,
+    /// taken before any view has it, or on Windows, whose Alt+F4 is the system's).
+    pub fn quits(key: &KeyboardEvent) -> bool {
+        quits_on(std::env::consts::OS, key)
+    }
+
+    /// [`quits`] on `os` (as `std::env::consts::OS` names it): Ctrl+Q pressed on Linux, Shift
+    /// or not, with no other modifier, the Q of the keyboard's layout.
+    pub fn quits_on(os: &str, key: &KeyboardEvent) -> bool {
+        let others = Modifiers::ALT | Modifiers::ALT_GRAPH | Modifiers::META | Modifiers::SUPER;
+        os == "linux"
+            && key.state == KeyState::Down
+            && key.modifiers.contains(Modifiers::CONTROL)
+            && !key.modifiers.intersects(others)
+            && matches!(&key.key, Key::Character(c) if c.eq_ignore_ascii_case("q"))
+    }
+
+    /// Ask the app's window to close, as its close button does, at its next frame: the app's
+    /// editor's [`quits`] key, which reaches the editor's window and not the app's.
+    pub fn request_quit() {
+        QUIT.store(true, Ordering::Release);
+    }
+
+    /// Whether quitting has been asked for since this was last asked (once).
+    pub fn quit_requested() -> bool {
+        QUIT.swap(false, Ordering::AcqRel)
+    }
 
     /// The scale the window opens at (the primary monitor's, where baseview opens it), the
     /// process made aware of each monitor's scale first. None where the window's own scale

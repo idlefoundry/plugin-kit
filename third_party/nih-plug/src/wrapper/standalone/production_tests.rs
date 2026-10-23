@@ -104,12 +104,7 @@ fn a_panics_token_reaches_the_instrument_with_its_own_block_alone() {
         .clone();
     assert_eq!(
         seen,
-        [
-            (Some(7), true),
-            (None, true),
-            (None, false),
-            (None, true)
-        ]
+        [(Some(7), true), (None, true), (None, false), (None, true)]
     );
 }
 
@@ -174,12 +169,18 @@ fn the_apps_window_opens_at_the_scale_its_editor_was_told_first() {
     let refusing = Scaled::new(false);
     let options = app_window::options("App".into(), &refusing, Some(1.25));
     assert_eq!(refusing.asked(), ["scale 1.25", "size"]);
-    assert_eq!(options.scale, baseview::WindowScalePolicy::SystemScaleFactor);
+    assert_eq!(
+        options.scale,
+        baseview::WindowScalePolicy::SystemScaleFactor
+    );
 
     let untold = Scaled::new(true);
     let options = app_window::options("App".into(), &untold, None);
     assert_eq!(untold.asked(), ["size"], "no scale to tell");
-    assert_eq!(options.scale, baseview::WindowScalePolicy::SystemScaleFactor);
+    assert_eq!(
+        options.scale,
+        baseview::WindowScalePolicy::SystemScaleFactor
+    );
 }
 
 /// A resize from outside fits the window to its editor again on Windows alone, where Windows
@@ -192,4 +193,64 @@ fn a_resize_refits_the_apps_window_on_windows_alone() {
     assert!(!app_window::refits(&Event::Window(
         baseview::WindowEvent::Focused
     )));
+}
+
+/// The systems' shortcuts for quitting an application, where the app's windows act on them
+/// (PATCHES.md, change 22; the CA-72's R-QUIT, whose test this is): Ctrl+Q on Linux; macOS's
+/// ⌘Q is its main menu's (baseview's change 11) and Windows' Alt+F4 the system's, so neither is
+/// the windows'.
+#[test]
+fn ctrl_q_quits_on_linux_and_no_other_key_does() {
+    use app_window::quits_on;
+    use keyboard_types::{Key, KeyState, KeyboardEvent, Modifiers};
+    let key = |key: Key, modifiers: Modifiers, state: KeyState| KeyboardEvent {
+        key,
+        modifiers,
+        state,
+        ..Default::default()
+    };
+    let q = |m| key(Key::Character("q".into()), m, KeyState::Down);
+    assert!(quits_on("linux", &q(Modifiers::CONTROL)));
+    assert!(quits_on(
+        "linux",
+        &key(
+            Key::Character("Q".into()),
+            Modifiers::CONTROL | Modifiers::SHIFT,
+            KeyState::Down
+        )
+    ));
+    for (what, k) in [
+        ("q alone", q(Modifiers::empty())),
+        ("Ctrl+Alt+Q", q(Modifiers::CONTROL | Modifiers::ALT)),
+        ("Ctrl+Super+Q", q(Modifiers::CONTROL | Modifiers::SUPER)),
+        (
+            "Ctrl+W",
+            key(
+                Key::Character("w".into()),
+                Modifiers::CONTROL,
+                KeyState::Down,
+            ),
+        ),
+        (
+            "Ctrl+Q's release",
+            key(Key::Character("q".into()), Modifiers::CONTROL, KeyState::Up),
+        ),
+    ] {
+        assert!(!quits_on("linux", &k), "{what}");
+    }
+    for os in ["macos", "windows"] {
+        assert!(!quits_on(os, &q(Modifiers::CONTROL)), "{os}: Ctrl+Q");
+        assert!(!quits_on(os, &q(Modifiers::META)), "{os}: the menu's ⌘Q");
+        let alt_f4 = key(Key::F4, Modifiers::ALT, KeyState::Down);
+        assert!(!quits_on(os, &alt_f4), "{os}: the system's Alt+F4");
+    }
+}
+
+/// An editor's request to quit is seen once, at the app's window's next frame.
+#[test]
+fn a_request_to_quit_is_seen_once() {
+    let _ = app_window::quit_requested();
+    app_window::request_quit();
+    assert!(app_window::quit_requested());
+    assert!(!app_window::quit_requested(), "seen a second time");
 }

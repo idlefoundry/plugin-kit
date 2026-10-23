@@ -24,7 +24,7 @@ assert_process_allocs = ["dep:assert_no_alloc"]
 # building additional dependencies for audio and MIDI handling.
 standalone = ["dep:baseview", "dep:clap", "dep:cpal", "dep:jack", "dep:midir", "dep:rtrb"]
 # Shipped app host, independent of the legacy launcher's JACK dependency.
-standalone-production = ["dep:baseview", "dep:plugin-kit-standalone", "dep:rtrb"]
+standalone-production = ["dep:baseview", "dep:keyboard-types", "dep:plugin-kit-standalone", "dep:rtrb"]
 # Enables the `nih_export_vst3!()` macro. Enabled by default. This feature
 # exists mostly for GPL-compliance reasons, since even if you don't use the VST3
 # wrapper you might otherwise still include a couple (unused) symbols from the
@@ -75,6 +75,8 @@ baseview = { path = "../baseview", optional = true }
 # All the claps!
 clap = { version = "4.1.8", features = ["derive", "wrap_help"], optional = true }
 cpal = { version = "0.15", optional = true }
+# The production standalone's quit shortcut (`app_window::quits`), as baseview gives its keys.
+keyboard-types = { version = "0.6.1", default-features = false, optional = true }
 jack = { version = "0.11.4", optional = true }
 midir = { version = "0.9.1", optional = true }
 plugin-kit-standalone = { path = "../../crates/plugin-kit-standalone", optional = true }

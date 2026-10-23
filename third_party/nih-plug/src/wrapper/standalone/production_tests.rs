@@ -112,3 +112,84 @@ fn a_panics_token_reaches_the_instrument_with_its_own_block_alone() {
         ]
     );
 }
+
+/// An editor that takes the scale it is told, or refuses it, and notes what it was asked.
+struct Scaled {
+    takes: bool,
+    asked: Mutex<Vec<String>>,
+}
+
+impl Scaled {
+    fn new(takes: bool) -> Self {
+        Self {
+            takes,
+            asked: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn note(&self, what: String) {
+        self.asked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(what);
+    }
+
+    fn asked(&self) -> Vec<String> {
+        self.asked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl Editor for Scaled {
+    fn spawn(&self, _: ParentWindowHandle, _: Arc<dyn GuiContext>) -> Box<dyn Any + Send> {
+        Box::new(())
+    }
+    fn size(&self) -> (u32, u32) {
+        self.note("size".into());
+        (600, 400)
+    }
+    fn set_scale_factor(&self, factor: f32) -> bool {
+        self.note(format!("scale {factor}"));
+        self.takes
+    }
+    fn param_value_changed(&self, _: &str, _: f32) {}
+    fn param_modulation_changed(&self, _: &str, _: f32) {}
+    fn param_values_changed(&self) {}
+}
+
+/// The app's window opens at the scale its editor was told before it was first asked its size,
+/// and at the system's where there is none or the editor refuses it (PATCHES.md, change 21; the
+/// CA-72's R-WIN-STANDALONE).
+#[test]
+fn the_apps_window_opens_at_the_scale_its_editor_was_told_first() {
+    let editor = Scaled::new(true);
+    let options = app_window::options("App".into(), &editor, Some(1.5));
+    assert_eq!(editor.asked(), ["scale 1.5", "size"]);
+    assert_eq!(options.title, "App");
+    assert_eq!(options.size, baseview::Size::new(600.0, 400.0));
+    assert_eq!(options.scale, baseview::WindowScalePolicy::ScaleFactor(1.5));
+
+    let refusing = Scaled::new(false);
+    let options = app_window::options("App".into(), &refusing, Some(1.25));
+    assert_eq!(refusing.asked(), ["scale 1.25", "size"]);
+    assert_eq!(options.scale, baseview::WindowScalePolicy::SystemScaleFactor);
+
+    let untold = Scaled::new(true);
+    let options = app_window::options("App".into(), &untold, None);
+    assert_eq!(untold.asked(), ["size"], "no scale to tell");
+    assert_eq!(options.scale, baseview::WindowScalePolicy::SystemScaleFactor);
+}
+
+/// A resize from outside fits the window to its editor again on Windows alone, where Windows
+/// scales a window whose monitor's scale changes; elsewhere a window manager's size is kept.
+#[test]
+fn a_resize_refits_the_apps_window_on_windows_alone() {
+    let info = baseview::WindowInfo::from_logical_size(baseview::Size::new(600.0, 400.0), 1.0);
+    let resized = Event::Window(baseview::WindowEvent::Resized(info));
+    assert_eq!(app_window::refits(&resized), cfg!(target_os = "windows"));
+    assert!(!app_window::refits(&Event::Window(
+        baseview::WindowEvent::Focused
+    )));
+}

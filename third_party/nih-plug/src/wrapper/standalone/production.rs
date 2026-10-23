@@ -9,9 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use baseview::{
-    Event, EventStatus, Size, Window, WindowHandler, WindowOpenOptions, WindowScalePolicy,
-};
+use baseview::{Event, EventStatus, Window, WindowHandler};
 use crossbeam::queue::ArrayQueue;
 use plugin_kit_standalone::{
     AppHandle, AppOptions, AudioBlock, AudioProcessor, MidiResetScope, ProcessConfig, SessionState,
@@ -648,12 +646,12 @@ impl<P: Plugin> WindowHandler for AppWindow<P> {
             }
         }
         if self.session.resize.swap(false, Ordering::AcqRel) {
-            let (width, height) = self
+            let size = self
                 .editor
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .size();
-            window.resize(Size::new(f64::from(width), f64::from(height)));
+            app_window::fit(window, size);
         }
         if self.session.state_changed.swap(false, Ordering::AcqRel) {
             self.editor
@@ -662,7 +660,10 @@ impl<P: Plugin> WindowHandler for AppWindow<P> {
                 .param_values_changed();
         }
     }
-    fn on_event(&mut self, _window: &mut Window, _event: Event) -> EventStatus {
+    fn on_event(&mut self, _window: &mut Window, event: Event) -> EventStatus {
+        if app_window::refits(&event) {
+            self.session.resize.store(true, Ordering::Release);
+        }
         EventStatus::Ignored
     }
 }
@@ -753,48 +754,37 @@ where
         session: session.clone(),
         app: app.clone(),
     });
+    let options = app_window::options(P::NAME.to_owned(), editor.as_ref(), app_window::scale());
     let editor = Arc::new(Mutex::new(editor));
-    let (width, height) = editor
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .size();
-    Window::open_blocking(
-        WindowOpenOptions {
-            title: P::NAME.to_owned(),
-            size: Size::new(f64::from(width), f64::from(height)),
-            scale: WindowScalePolicy::SystemScaleFactor,
-            gl_config: None,
-        },
-        move |window| {
-            let parent = match window.raw_window_handle() {
-                raw_window_handle::RawWindowHandle::Xlib(handle) => {
-                    ParentWindowHandle::X11Window(handle.window as u32)
-                }
-                raw_window_handle::RawWindowHandle::Xcb(handle) => {
-                    ParentWindowHandle::X11Window(handle.window)
-                }
-                raw_window_handle::RawWindowHandle::AppKit(handle) => {
-                    ParentWindowHandle::AppKitNsView(handle.ns_view)
-                }
-                raw_window_handle::RawWindowHandle::Win32(handle) => {
-                    ParentWindowHandle::Win32Hwnd(handle.hwnd)
-                }
-                _ => panic!("The standalone window backend is unsupported."),
-            };
-            let handle = editor
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .spawn(parent, context);
-            AppWindow {
-                _editor_handle: handle,
-                editor,
-                session,
-                executor,
-                app,
-                audio_tasks: audio_gui_tasks,
+    Window::open_blocking(options, move |window| {
+        let parent = match window.raw_window_handle() {
+            raw_window_handle::RawWindowHandle::Xlib(handle) => {
+                ParentWindowHandle::X11Window(handle.window as u32)
             }
-        },
-    );
+            raw_window_handle::RawWindowHandle::Xcb(handle) => {
+                ParentWindowHandle::X11Window(handle.window)
+            }
+            raw_window_handle::RawWindowHandle::AppKit(handle) => {
+                ParentWindowHandle::AppKitNsView(handle.ns_view)
+            }
+            raw_window_handle::RawWindowHandle::Win32(handle) => {
+                ParentWindowHandle::Win32Hwnd(handle.hwnd)
+            }
+            _ => panic!("The standalone window backend is unsupported."),
+        };
+        let handle = editor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .spawn(parent, context);
+        AppWindow {
+            _editor_handle: handle,
+            editor,
+            session,
+            executor,
+            app,
+            audio_tasks: audio_gui_tasks,
+        }
+    });
     let closing = Instant::now();
     let result = runtime.shutdown();
     terminate.store(true, Ordering::Release);
@@ -809,6 +799,77 @@ where
         .join()
         .map_err(|_| "The standalone task worker failed.".to_owned())?;
     result
+}
+
+/// The app's window and its editor's scale (the CA-72's `docs/decisions.md` R-WIN-STANDALONE).
+/// On Windows baseview made the process aware of each monitor's scale only once its first
+/// window was open, and scaled that window by its monitor's scale while the editor in it, told
+/// no scale, drew at 1: at 125 % and more the window opened a quarter or more larger than its
+/// editor, black beyond it (the CA-72's issue 64). Now the process is aware of each monitor's
+/// scale before anything is measured, and the window and the editor share the scale of the
+/// monitor it opens on. baseview's change 8 (`third_party/baseview/PATCHES.md`) leaves the
+/// window no frame to drag and no maximise box, which the editor does not follow; and on
+/// Windows a resize from outside (Windows scales a window whose monitor's scale changes) is
+/// undone at the next frame, [`refits`].
+pub mod app_window {
+    use baseview::{Event, Size, Window, WindowEvent, WindowOpenOptions, WindowScalePolicy};
+
+    use crate::editor::Editor;
+
+    /// The scale the window opens at (the primary monitor's, where baseview opens it), the
+    /// process made aware of each monitor's scale first. None where the window's own scale
+    /// policy is kept (macOS, Linux), or where Windows does not say.
+    #[cfg(target_os = "windows")]
+    pub fn scale() -> Option<f32> {
+        use windows::Win32::Foundation::POINT;
+        use windows::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTOPRIMARY};
+        use windows::Win32::UI::HiDpi::{
+            GetDpiForMonitor, SetProcessDpiAwarenessContext,
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE, MDT_EFFECTIVE_DPI,
+        };
+        // SAFETY: plain calls with values of their own types. The awareness is baseview's,
+        // which it sets after its first window; it fails harmlessly if the process has one.
+        unsafe {
+            SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
+            let monitor = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+            let (mut x, mut y) = (0u32, 0u32);
+            GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut x, &mut y).ok()?;
+            (x > 0).then(|| x as f32 / 96.0)
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    pub fn scale() -> Option<f32> {
+        None
+    }
+
+    /// The window made its editor's `size` (logical pixels) at its scale.
+    pub fn fit(window: &mut Window, (width, height): (u32, u32)) {
+        window.resize(Size::new(f64::from(width), f64::from(height)));
+    }
+
+    /// Whether `event` asks for the window to be fitted to its editor again: on Windows, any
+    /// resize, the window's own (fitted already, which changes nothing) or one from outside
+    /// (a monitor's scale changed while the window was open: Windows scaled the window and left
+    /// the editor, which cannot change its scale once open). Not elsewhere, where a window
+    /// manager may keep a window at a size of its own, which the window would fight.
+    pub fn refits(event: &Event) -> bool {
+        cfg!(target_os = "windows") && matches!(event, Event::Window(WindowEvent::Resized(_)))
+    }
+
+    /// The window's options for `editor`: `scale` told the editor before it is first asked its
+    /// size, and the window at the same scale where it takes it (else the system's, as before).
+    pub fn options(title: String, editor: &dyn Editor, scale: Option<f32>) -> WindowOpenOptions {
+        let scale = scale.filter(|&s| editor.set_scale_factor(s));
+        let (width, height) = editor.size();
+        WindowOpenOptions {
+            title,
+            size: Size::new(f64::from(width), f64::from(height)),
+            scale: scale.map_or(WindowScalePolicy::SystemScaleFactor, |s| {
+                WindowScalePolicy::ScaleFactor(f64::from(s))
+            }),
+        }
+    }
 }
 
 #[cfg(test)]

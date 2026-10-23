@@ -246,6 +246,27 @@ a number of their own there (`docs/decisions.md` K-CA72-0.2.8):
     `src/wrapper/standalone/production_tests.rs` here drives the adapter as the runtime does
     (`--features standalone-production --lib production`), and fails without the token passed.
 
+21. **The standalones' windows: the kit's baseview, and on Windows one scale for the window
+    and its editor** (the CA-72's R-WIN-STANDALONE, its issue 64, `8109b28`, 2026-10-18).
+    Both standalone adapters opened their window with upstream's baseview at `579130e` from
+    git, with `opengl`, so an application's window had none of `../baseview`'s changes (its
+    change 9: no frame to drag and no maximise box), and a plug-in built two baseviews. They
+    now take `../baseview` by path, without `opengl` (`gl_config` is gone from both), the same
+    copy a plug-in's editor opens in. And on Windows baseview made the process aware of each
+    monitor's scale only once its first window was open, and scaled that window by its
+    monitor's scale while the editor in it, told no scale, drew at 1: at 125 % and more the
+    window opened a quarter or more larger than its editor, black beyond it. Now
+    `app_window::scale()` makes the process aware of each monitor's scale and reads the
+    primary monitor's (where the window opens) before anything is measured;
+    `app_window::options()` tells the editor that scale before first asking its size and opens
+    the window at it (else at the system's, as before); and a resize from outside (Windows
+    scales a window whose monitor's scale changes) is undone at the next frame on Windows
+    (`refits`, `fit`). macOS and Linux keep the system's scale policy. The manifest takes
+    `windows`' `Win32_UI_HiDpi`. `src/wrapper/standalone/production_tests.rs`:
+    `the_apps_window_opens_at_the_scale_its_editor_was_told_first` and
+    `a_resize_refits_the_apps_window_on_windows_alone`; the CA-72's test of its own window at
+    five scales stays with it.
+
 To move to a newer upstream commit, copy its `Cargo.toml`, `LICENSE`, `README.md`, `src`
-and `nih_plug_derive` here and apply the twenty changes again, unless upstream has fixed them.
+and `nih_plug_derive` here and apply the twenty-one changes again, unless upstream has fixed them.
 Then update the commit above, and `nih_plug_xtask`'s `rev` in each plug-in's workspace `Cargo.toml`.

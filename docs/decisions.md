@@ -762,7 +762,11 @@ token's test, the occlusion test ("remote wrapper capability was not dispatched"
 `backing_scale` (a window never shown); nih-plug's 9; the occlusion test, built against
 clap-wrapper's {fmt} headers. baseview's macOS backend fails Clippy with warnings denied, as
 upstream's always has (objc 0.2's `msg_send!` trips `unexpected_cfgs`, and one `ptr_eq` in
-upstream's `view.rs`); the kit does not check it.
+upstream's `view.rs`); the kit does not check it. That run was of the tree at `a6a01fd`; what
+followed changed only the order of softbuffer's `use` lists, `mac_quit` (which did not compile
+in baseview's edition, the Mac having built it no more than it ran it) and text. By then the Mac
+had 4.6 GiB free, below the 6 GiB the shared rules allow a build at, so GitHub's macOS runner
+built and ran them.
 
 **Evidence (Windows 11, MSVC, 2026-10-23, rustc 1.97.1):** over SSH, workspace Clippy with
 warnings denied and its tests (125 passed, 3 ignored); nih_plug_derive's 17; nih-plug's 9 (the
@@ -770,3 +774,10 @@ refit is Windows'); both standalone features compiled together; baseview's Clipp
 denied. In the signed-in session (a one-shot scheduled task), baseview's 10 library tests: the
 6 identity tests, change 6's three and change 9's styles, which fails with the two styles put
 back ("a frame to drag").
+
+**Evidence (GitHub CI, PR #11, 2026-10-23, `cad311b`):** fmt, Clippy and the tests green on
+macOS 15, Windows 2025 and Ubuntu 22.04
+(https://github.com/idlefoundry/plugin-kit/actions/runs/39975306147), the vendored crates' steps
+with them: on macOS `backing_scale` and `mac_quit`'s three (⌘Q, the menus, the quit Apple
+event); on Windows baseview's 10 window tests; on Linux `x11_expose` under Xvfb; nih-plug's 9 on
+each; the occlusion test on Linux and macOS.

@@ -97,6 +97,11 @@ use crate::wrapper::util::{
     OwnParamChange, OWN_PARAM_CHANGES,
 };
 
+// Private host capability; keep the versioned ID in sync with clap-wrapper's
+// include/clapwrapper/native-window-occlusion.h. Only presence is inspected.
+const HOST_NATIVE_WINDOW_OCCLUSION_UNRELIABLE: &CStr =
+    c"com.idlefoundry.native-window-occlusion-unreliable/1";
+
 /// How many output parameter changes we can store in our output parameter change queue. Storing
 /// more than this many parameters at a time will cause changes to get lost.
 const OUTPUT_EVENT_QUEUE_CAPACITY: usize = 2048;
@@ -184,6 +189,7 @@ pub struct Wrapper<P: ClapPlugin> {
 
     clap_plugin_gui: clap_plugin_gui,
     host_gui: AtomicRefCell<Option<ClapPtr<clap_host_gui>>>,
+    pub(super) native_window_occlusion_reliable: AtomicBool,
 
     clap_plugin_latency: clap_plugin_latency,
     host_latency: AtomicRefCell<Option<ClapPtr<clap_host_latency>>>,
@@ -626,6 +632,7 @@ impl<P: ClapPlugin> Wrapper<P> {
                 hide: Some(Self::ext_gui_hide),
             },
             host_gui: AtomicRefCell::new(None),
+            native_window_occlusion_reliable: AtomicBool::new(true),
 
             clap_plugin_latency: clap_plugin_latency {
                 get: Some(Self::ext_latency_get),
@@ -1968,6 +1975,16 @@ impl<P: ClapPlugin> Wrapper<P> {
         let wrapper = &*((*plugin).plugin_data as *const Self);
 
         // We weren't allowed to query these in the constructor, so we need to do it now instead.
+        // The marker is opaque: no borrowed pointer is retained or dereferenced. Query it once
+        // during CLAP init, before the host can attach an editor, never from the frame timer.
+        wrapper.native_window_occlusion_reliable.store(
+            query_host_extension::<c_void>(
+                &wrapper.host_callback,
+                HOST_NATIVE_WINDOW_OCCLUSION_UNRELIABLE,
+            )
+            .is_none(),
+            Ordering::Release,
+        );
         *wrapper.host_gui.borrow_mut() =
             query_host_extension::<clap_host_gui>(&wrapper.host_callback, CLAP_EXT_GUI);
         *wrapper.host_latency.borrow_mut() =
@@ -3374,3 +3391,7 @@ unsafe fn query_host_extension<T>(
         None
     }
 }
+
+#[cfg(test)]
+#[path = "visibility_tests.rs"]
+mod visibility_tests;

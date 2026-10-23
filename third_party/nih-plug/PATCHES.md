@@ -204,6 +204,23 @@ Windows 11 (2026-10-07; the CA-72's `docs/decisions.md` R36, its change 12; K4 h
     `crates/plugin-kit-learn/tests/vst3_host.rs` answers the view's request at once both ways
     and, on Linux, delivers a refusal through the actual run-loop socket.
 
+From the CA-72's 0.2.6 to 0.2.8 (2026-10-18 and 19; the kit's `docs/decisions.md`
+K-CA72-0.2.8), its changes 15 and 16, here 18 and 19:
+
+18. **A remote wrapper can opt out of native-window occlusion** (the CA-72's
+    R-AU-REMOTE-VISIBILITY). The additive `GuiContext::native_window_occlusion_reliable()`
+    defaults to true. CLAP queries the private presence-only host capability
+    `com.idlefoundry.native-window-occlusion-unreliable/1` once during initialization,
+    caches the answer per instance, and exposes it through the GUI context. The AUv2
+    wrapper advertises this capability (`../clap-wrapper/PATCHES.md`, change 7) because a
+    remotely presented editor's local NSWindow need not describe its visible proxy.
+    `PluginApi` remains `Clap`; ordinary CLAP hosts, VST3 and both standalone adapters
+    retain the default. An editor that skips presenting while its window is occluded asks
+    this first and keeps presenting where it is false. `src/wrapper/clap/visibility_tests.rs`
+    (the CA-72's) runs the actual CLAP initialization and context against a host with and
+    without the marker (`cargo test --manifest-path third_party/nih-plug/Cargo.toml --lib
+    visibility_tests`, in the kit's CI); with the marker ignored, two of its three fail.
+
 To move to a newer upstream commit, copy its `Cargo.toml`, `LICENSE`, `README.md`, `src`
-and `nih_plug_derive` here and apply the seventeen changes again, unless upstream has fixed them.
+and `nih_plug_derive` here and apply the eighteen changes again, unless upstream has fixed them.
 Then update the commit above, and `nih_plug_xtask`'s `rev` in each plug-in's workspace `Cargo.toml`.

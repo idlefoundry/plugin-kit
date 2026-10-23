@@ -18,6 +18,14 @@ pub trait GuiContext: Send + Sync + 'static {
     /// about screen.
     fn plugin_api(&self) -> PluginApi;
 
+    /// Whether the window holding this editor describes the presented view's visibility.
+    /// A wrapper that presents the editor remotely must return false: its off-screen native
+    /// backing window can be occluded while the host's proxy is visible. This is a stable
+    /// capability, not a current visible/hidden signal. Local editors keep their native policy.
+    fn native_window_occlusion_reliable(&self) -> bool {
+        true
+    }
+
     /// Ask the host to resize the editor window to the size specified by
     /// [`Editor::size()`][crate::prelude::Editor::size()]. This will return false if the host
     /// somehow didn't like this and rejected the resize, in which case the window should revert to

@@ -150,6 +150,12 @@ impl<P: ClapPlugin> GuiContext for WrapperGuiContext<P> {
         PluginApi::Clap
     }
 
+    fn native_window_occlusion_reliable(&self) -> bool {
+        self.wrapper
+            .native_window_occlusion_reliable
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
     fn request_resize(&self) -> bool {
         self.wrapper.request_resize()
     }

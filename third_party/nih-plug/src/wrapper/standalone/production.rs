@@ -821,7 +821,7 @@ where
 /// no scale, drew at 1: at 125 % and more the window opened a quarter or more larger than its
 /// editor, black beyond it (the CA-72's issue 64). Now the process is aware of each monitor's
 /// scale before anything is measured, and the window and the editor share the scale of the
-/// monitor it opens on. baseview's change 8 (`third_party/baseview/PATCHES.md`) leaves the
+/// monitor it opens on. baseview's change 9 (`third_party/baseview/PATCHES.md`) leaves the
 /// window no frame to drag and no maximise box, which the editor does not follow; and on
 /// Windows a resize from outside (Windows scales a window whose monitor's scale changes) is
 /// undone at the next frame, [`refits`].

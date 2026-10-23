@@ -252,6 +252,11 @@ extern "C" fn become_first_responder(this: &Object, _sel: Sel) -> BOOL {
     let state = unsafe { WindowState::from_view(this) };
     let is_key_window = unsafe {
         let window: id = msg_send![this, window];
+        // (No window yet as `viewWillMoveToWindow:` makes the view its first responder: a
+        // message to nil, which a debug build's null-pointer check stopped; PATCHES.md, change 8.)
+        if window.is_null() {
+            return YES;
+        }
         let is_key_window: BOOL = msg_send![window, isKeyWindow];
         is_key_window == YES
     };
@@ -295,6 +300,23 @@ extern "C" fn view_did_change_backing_properties(this: &Object, _: Sel, _: id) {
 
         let scale_factor: f64 =
             if ns_window.is_null() { 1.0 } else { NSWindow::backingScaleFactor(ns_window) };
+
+        // Patched (PATCHES.md, change 8): the view's layer takes the window's scale before the
+        // handler hears of it. AppKit leaves a layer-backed view's layer at the scale it was
+        // made with when the window moves to a screen of another scale, so that a frame drawn
+        // for the new one showed at half (or twice) its size in a layer still at the old.
+        if !ns_window.is_null() {
+            let layer: id = msg_send![this, layer];
+            if !layer.is_null() {
+                let old: f64 = msg_send![layer, contentsScale];
+                if old != scale_factor {
+                    let () = msg_send![class!(CATransaction), begin];
+                    let () = msg_send![class!(CATransaction), setDisableActions: YES];
+                    let () = msg_send![layer, setContentsScale: scale_factor];
+                    let () = msg_send![class!(CATransaction), commit];
+                }
+            }
+        }
 
         let state = WindowState::from_view(this);
 

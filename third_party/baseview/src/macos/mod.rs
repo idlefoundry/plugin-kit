@@ -1,3 +1,4 @@
+mod application;
 mod cursor;
 mod keyboard;
 mod view;

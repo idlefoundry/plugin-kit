@@ -16,6 +16,9 @@ pub(super) struct EventLoop {
     parent_handle: Option<ParentHandle>,
 
     new_physical_size: Option<PhySize>,
+    /// Whether the X server asked, in the events drained, for part of the window to be drawn
+    /// again (PATCHES.md, change 12).
+    exposed: bool,
     frame_interval: Duration,
     event_loop_running: bool,
 }
@@ -32,6 +35,7 @@ impl EventLoop {
             frame_interval: Duration::from_millis(15),
             event_loop_running: false,
             new_physical_size: None,
+            exposed: false,
         }
     }
 
@@ -41,6 +45,7 @@ impl EventLoop {
         // window is resized, and we need to batch those together and just send one resize event
         // when they've all been coalesced.
         self.new_physical_size = None;
+        self.exposed = false;
 
         while let Some(event) = self.window.xcb_connection.conn.poll_for_event()? {
             self.handle_xcb_event(event);
@@ -55,6 +60,15 @@ impl EventLoop {
             self.handler.on_event(
                 &mut crate::Window::new(Window { inner: &self.window }),
                 Event::Window(WindowEvent::Resized(window_info)),
+            );
+        }
+
+        // Once for the events drained, after the size they brought: the handler shows what it
+        // has at the size it now has.
+        if std::mem::take(&mut self.exposed) {
+            self.handler.on_event(
+                &mut crate::Window::new(Window { inner: &self.window }),
+                Event::Window(WindowEvent::Damaged),
             );
         }
 
@@ -161,6 +175,13 @@ impl EventLoop {
                 {
                     self.handle_close_requested();
                 }
+            }
+
+            // The window to be drawn again, all or part of it: as it is mapped or takes a new
+            // size, or (with no compositing) uncovered. Given once the events drained are
+            // handled (PATCHES.md, change 12).
+            XEvent::Expose(_) => {
+                self.exposed = true;
             }
 
             XEvent::ConfigureNotify(event) => {

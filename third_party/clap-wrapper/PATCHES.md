@@ -99,6 +99,28 @@ R-AU-PITCH-BEND), in `src/detail/auv2/process.cpp`:
    alone; notes, a zero-velocity note-off, CCs 1, 64, 120, 121 and 123 and pressure
    unchanged. A plug-in builds it with its component (each plug-in's `scripts/auv2`).
 
+And one more, from the CA-72's R-AU-REMOTE-VISIBILITY (its `8474482`, 2026-10-18), in
+`src/clap_proxy.h`, `src/clap_proxy.cpp`, `src/detail/auv2/auv2_base_classes.h` and a new
+`include/clapwrapper/native-window-occlusion.h`, numbered 7 as the CA-72 numbers it:
+
+7. **AUv2 marks its backing window's occlusion as unreliable.** GarageBand and Logic may show
+   an Audio Unit's editor through a remote proxy (`AUHostingService`) while the NSWindow
+   holding its view, the plugin's own, reads as occluded: an editor that stops presenting while
+   its window is occluded (the CA-72's R-EDITOR-CPU) came up blank in GarageBand on reopening,
+   drawing but never presenting. A private, versioned, presence-only host capability,
+   `com.idlefoundry.native-window-occlusion-unreliable/1`, is answered through each `IHost`
+   instance (`IHost::native_window_occlusion_reliable()`, true by default); only `WrapAsAUV2`
+   answers false, and its CLAP is then given a static marker when it asks for the capability.
+   The static marker needs no call into the host from the editor's frame timer and no pointer
+   whose lifetime the plugin must track. The embedded CLAP must be built with this kit's
+   nih-plug, which passes the answer to its editor (`../nih-plug/PATCHES.md`, change 18).
+   `tests/native-window-occlusion.cpp` (the CA-72's, on the real proxy dispatcher, which builds
+   on any system, as its header says, and in the kit's CI on Linux and macOS) checks the
+   dispatch, the default policy, a version's refusal, each instance's own answer and the
+   standard GUI extension kept; without the dispatch it fails ("remote wrapper capability was
+   not dispatched"). A host's visible, hidden and reopened windows are checked in the host, not
+   here.
+
 To update: copy the same paths from a newer tag (and the SDKs at the versions it then
 fetches), apply these changes again if upstream has not made its own, build the component
 (`scripts/auv2.sh`), validate it (`scripts/validate.sh`: auval and pluginval, several runs),

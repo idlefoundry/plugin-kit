@@ -204,6 +204,84 @@ Windows 11 (2026-10-07; the CA-72's `docs/decisions.md` R36, its change 12; K4 h
     `crates/plugin-kit-learn/tests/vst3_host.rs` answers the view's request at once both ways
     and, on Linux, delivers a refusal through the actual run-loop socket.
 
+From the CA-72's 0.2.6 to 0.2.8 (2026-10-18 and 19; the kit's `docs/decisions.md`
+K-CA72-0.2.8), its changes 15 and 16, here 18 and 19:
+
+18. **A remote wrapper can opt out of native-window occlusion** (the CA-72's
+    R-AU-REMOTE-VISIBILITY). The additive `GuiContext::native_window_occlusion_reliable()`
+    defaults to true. CLAP queries the private presence-only host capability
+    `com.idlefoundry.native-window-occlusion-unreliable/1` once during initialization,
+    caches the answer per instance, and exposes it through the GUI context. The AUv2
+    wrapper advertises this capability (`../clap-wrapper/PATCHES.md`, change 7) because a
+    remotely presented editor's local NSWindow need not describe its visible proxy.
+    `PluginApi` remains `Clap`; ordinary CLAP hosts, VST3 and both standalone adapters
+    retain the default. An editor that skips presenting while its window is occluded asks
+    this first and keeps presenting where it is false. `src/wrapper/clap/visibility_tests.rs`
+    (the CA-72's) runs the actual CLAP initialization and context against a host with and
+    without the marker (`cargo test --manifest-path third_party/nih-plug/Cargo.toml --lib
+    visibility_tests`, in the kit's CI); with the marker ignored, two of its three fail.
+
+19. **A VST3 host's brightness arrives as brightness** (the CA-72's R-MPE, its issue 81,
+    `af0b1f3`). `NoteExpressionController::translate_event`
+    (`src/wrapper/vst3/note_expressions.rs`) turned `kBrightnessTypeID` into
+    `NoteEvent::PolyExpression` and `kExpressionTypeID` into `PolyBrightness`, the opposite of
+    its own `translate_event_reverse` and of the CLAP wrapper, so a VST3 host's MPE timbre
+    (brightness) reached a plugin as expression. They now map each to its own. The module's
+    own test, `brightness_and_expression_each_map_to_their_own` (`cargo test --manifest-path
+    third_party/nih-plug/Cargo.toml --features vst3 --lib note_expressions`, in the kit's CI),
+    fails with the two mapped as before.
+
+Three more from the CA-72's 0.2.2 to 0.2.8 that changed the production standalone (16) without
+a number of their own there (`docs/decisions.md` K-CA72-0.2.8):
+
+20. **A standalone panic's token reaches the instrument with its block.** The kit's
+    `plugin-kit-standalone` captures a tagged PANIC's token with the block's panic
+    (`AudioProcessor::panic_token`, K-PANIC-TOKEN), but this adapter dropped it, so an
+    instrument could not tell which of its editor's PANIC requests a block's reset answered.
+    The adapter now keeps the token given for the next block and offers it, with that block's
+    panic only, through the additive `ProcessContext::standalone_panic_token()` (None in every
+    other context); it is taken at each block, a rejected one too, so it never reaches a later
+    block. An instrument reads it before `take_standalone_panic()`. The CA-72's e43d39c
+    (2026-10-14), which it tests through its own instrument;
+    `src/wrapper/standalone/production_tests.rs` here drives the adapter as the runtime does
+    (`--features standalone-production --lib production`), and fails without the token passed.
+
+21. **The standalones' windows: the kit's baseview, and on Windows one scale for the window
+    and its editor** (the CA-72's R-WIN-STANDALONE, its issue 64, `8109b28`, 2026-10-18).
+    Both standalone adapters opened their window with upstream's baseview at `579130e` from
+    git, with `opengl`, so an application's window had none of `../baseview`'s changes (its
+    change 9: no frame to drag and no maximise box), and a plug-in built two baseviews. They
+    now take `../baseview` by path, without `opengl` (`gl_config` is gone from both), the same
+    copy a plug-in's editor opens in. And on Windows baseview made the process aware of each
+    monitor's scale only once its first window was open, and scaled that window by its
+    monitor's scale while the editor in it, told no scale, drew at 1: at 125 % and more the
+    window opened a quarter or more larger than its editor, black beyond it. Now
+    `app_window::scale()` makes the process aware of each monitor's scale and reads the
+    primary monitor's (where the window opens) before anything is measured;
+    `app_window::options()` tells the editor that scale before first asking its size and opens
+    the window at it (else at the system's, as before); and a resize from outside (Windows
+    scales a window whose monitor's scale changes) is undone at the next frame on Windows
+    (`refits`, `fit`). macOS and Linux keep the system's scale policy. The manifest takes
+    `windows`' `Win32_UI_HiDpi`. `src/wrapper/standalone/production_tests.rs`:
+    `the_apps_window_opens_at_the_scale_its_editor_was_told_first` and
+    `a_resize_refits_the_apps_window_on_windows_alone`; the CA-72's test of its own window at
+    five scales stays with it.
+
+22. **Every way of quitting the production standalone closes its window** (the CA-72's
+    R-QUIT, `45d3104`, 2026-10-19), as its close button does, so that
+    `run_with_midi_reset_scope` returns and shuts the app down as then (its session saved,
+    audio and MIDI stopped), and its caller's own way out follows. On macOS the menus and the
+    quit Apple event are baseview's change 11; on Windows Alt+F4 is the system's, which
+    baseview leaves to `DefWindowProcW`. On Linux `app_window::quits` is Ctrl+Q: the app's
+    window closes at it (`window.close()`, as `WM_DELETE_WINDOW` closes it), and an editor that
+    has the keys (X11 gives them to the window under the pointer) asks for it with
+    `app_window::request_quit`, which the window acts on at its next frame. The manifest takes
+    `keyboard-types` for the key, as baseview gives it, with the `standalone-production`
+    feature. `src/wrapper/standalone/production_tests.rs`:
+    `ctrl_q_quits_on_linux_and_no_other_key_does` (the CA-72's) and
+    `a_request_to_quit_is_seen_once`. The CA-72's tests that its editor hands Ctrl+Q over
+    before typing has it stay with it.
+
 To move to a newer upstream commit, copy its `Cargo.toml`, `LICENSE`, `README.md`, `src`
-and `nih_plug_derive` here and apply the seventeen changes again, unless upstream has fixed them.
+and `nih_plug_derive` here and apply the twenty-two changes again, unless upstream has fixed them.
 Then update the commit above, and `nih_plug_xtask`'s `rev` in each plug-in's workspace `Cargo.toml`.

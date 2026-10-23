@@ -22,8 +22,8 @@ move onto it one at a time; until one has, it keeps its own copies.
 | `crates/plugin-kit-stereo` | The stereo and DRIVE's AUTO GAIN: a constant-power pan law, where SCATTER places the voices (EVEN, CENTER) and DOUBLE its pairs, INNER's band on either side (K7), the places' glide and the trims of voices summed; AUTO GAIN's curve measured off the audio thread for each sound, K-weighted, read by the audio thread without a lock and saved with the session (K6) |
 | `crates/plugin-kit-standalone` | Standalone instruments' audio/MIDI settings, safe stream ownership, routing, capture-clock adaptation, recovery and atomic sessions; CPAL 0.15.3 and midir 0.9.1, with a processor/editor adapter supplied by the instrument (`docs/standalone.md`) |
 | `crates/plugin-kit-queue` | Packed atomic event/frame queues with one-attempt operations: no unsafe code, allocation, retry loop or dependency on an audio backend |
-| `third_party/nih-plug` | The plug-in framework, at upstream's commit with fifteen changes (`PATCHES.md`) |
-| `third_party/baseview` | The editor's windows, with five changes for Windows hosts and one for macOS (`PATCHES.md`) |
+| `third_party/nih-plug` | The plug-in framework, at upstream's commit with twenty-two changes (`PATCHES.md`) |
+| `third_party/baseview` | The editor's and the standalones' windows, with six changes for Windows, four for macOS and two for Linux (`PATCHES.md`) |
 | `third_party/softbuffer` | The editor's pixels, at the 0.4.8 release with two changes for macOS: for hosts that load several plug-ins into one process, and the frame kept and shown in tiles, only where it changed (`PATCHES.md`) |
 | `third_party/clap-wrapper`, `clap`, `AudioUnitSDK` | The Audio Unit, built from a plug-in's CLAP (`clap-wrapper/PATCHES.md`, `VENDORED.md`) |
 
@@ -65,6 +65,7 @@ plug-in's samples needs its reason and a measurement, in that plug-in's records 
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo test --workspace --no-fail-fast`
+- the vendored crates' own tests of the kit's changes, as the CI's last steps run them
 
 The vendored crates are not members of this workspace; the plug-ins build and test them
 (`plugin-kit-learn` builds nih-plug's core here, without its wrappers' features).

@@ -16,8 +16,7 @@ use winapi::um::winuser::{
     WM_MOUSEHWHEEL, WM_MOUSELEAVE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT,
     WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SHOWWINDOW, WM_SIZE, WM_SYSCHAR, WM_SYSKEYDOWN,
     WM_SYSKEYUP, WM_TIMER, WM_USER, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSW, WS_CAPTION, WS_CHILD,
-    WS_CLIPSIBLINGS, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUPWINDOW, WS_SIZEBOX, WS_VISIBLE,
-    XBUTTON1, XBUTTON2,
+    WS_CLIPSIBLINGS, WS_MINIMIZEBOX, WS_POPUPWINDOW, WS_VISIBLE, XBUTTON1, XBUTTON2,
 };
 
 use std::cell::{Cell, Ref, RefCell};
@@ -747,16 +746,13 @@ impl Window<'_> {
                 bottom: window_info.physical_size().height as i32,
             };
 
+            // A window of its own (an application's) has no frame to drag and no maximise
+            // box: what it holds is sized by its handler alone, which a frame's size does not
+            // reach (PATCHES.md, change 9).
             let flags = if parented {
                 WS_CHILD | WS_VISIBLE
             } else {
-                WS_POPUPWINDOW
-                    | WS_CAPTION
-                    | WS_VISIBLE
-                    | WS_SIZEBOX
-                    | WS_MINIMIZEBOX
-                    | WS_MAXIMIZEBOX
-                    | WS_CLIPSIBLINGS
+                WS_POPUPWINDOW | WS_CAPTION | WS_VISIBLE | WS_MINIMIZEBOX | WS_CLIPSIBLINGS
             };
 
             if !parented {
@@ -1047,6 +1043,32 @@ mod tests {
             assert_eq!(count.load(Ordering::SeqCst), 2);
             DestroyWindow(second);
             DestroyWindow(parent);
+        }
+    }
+
+    // A window of its own is sized by its handler alone: no frame to drag, no maximise box
+    // (PATCHES.md, change 9). A parented window, a plug-in's editor, is a child as before.
+    #[test]
+    fn a_window_of_its_own_has_no_frame_to_drag_and_no_maximise_box() {
+        use winapi::um::winuser::{GetWindowLongW, GWL_STYLE, WS_MAXIMIZEBOX, WS_SIZEBOX};
+        let count = Arc::new(AtomicUsize::new(0));
+        let (_, own) = Window::open(false, null_mut(), options(), {
+            let count = count.clone();
+            move |_| Handler(count)
+        });
+        let (_, child) = Window::open(true, own, options(), move |_| Handler(count));
+        // SAFETY: the test's own live windows, on the thread that made them.
+        unsafe {
+            assert!(!own.is_null() && !child.is_null());
+            let style = GetWindowLongW(own, GWL_STYLE) as u32;
+            assert_eq!(style & WS_SIZEBOX, 0, "a frame to drag");
+            assert_eq!(style & WS_MAXIMIZEBOX, 0, "a maximise box");
+            assert_eq!(style & (WS_CAPTION | WS_MINIMIZEBOX), WS_CAPTION | WS_MINIMIZEBOX);
+            let style = GetWindowLongW(child, GWL_STYLE) as u32;
+            assert_eq!(style & WS_CHILD, WS_CHILD, "the parented window not a child");
+            assert_eq!(style & (WS_SIZEBOX | WS_CAPTION), 0);
+            DestroyWindow(child);
+            DestroyWindow(own);
         }
     }
 

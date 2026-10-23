@@ -1,8 +1,10 @@
 # On macOS, Windows and Linux: formatting, clippy and the kit's tests, on Linux with ngspice 47
 # required (built from its source release, checked and cached), so that the ngspice runner's
-# tests run rather than skip. The vendored crates (third_party/) are built and tested by the
-# plug-ins that take them, not here (docs/decisions.md K1), but for nih-plug's core, which
-# plugin-kit-learn builds (K3).
+# tests run rather than skip. The vendored crates (third_party/) are built by the plug-ins that
+# take them, not here (docs/decisions.md K1), but for nih-plug's core, which plugin-kit-learn
+# builds (K3); their own tests of the kit's changes run here (K-CA72-0.2.8): baseview's window
+# tests (on Linux one under Xvfb), nih-plug's of its wrappers and standalone adapter, and
+# clap-wrapper's of its proxy's host capability.
 name: CI
 
 on:
@@ -52,7 +54,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libreadline-dev bison flex
+          sudo apt-get install -y libasound2-dev libreadline-dev bison flex libx11-dev libx11-xcb-dev libxcb1-dev xvfb
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -84,3 +86,34 @@ jobs:
 
       - name: Typed persistent-field derive tests
         run: CARGO_TARGET_DIR="$RUNNER_TEMP/plugin-kit-derive" cargo test --manifest-path third_party/nih-plug/nih_plug_derive/Cargo.toml
+
+      # baseview's own: the X11 requests (every system), the Windows windows' styles and keys,
+      # the macOS windows' scale and quitting (on the main thread), and on Linux a window grown
+      # under Xvfb (third_party/baseview/PATCHES.md, changes 6 and 8 to 12).
+      - name: baseview's window tests
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/plugin-kit-vendored
+        run: |
+          cargo test --manifest-path third_party/baseview/Cargo.toml --no-fail-fast
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a cargo test --manifest-path third_party/baseview/Cargo.toml --test x11_expose -- --ignored
+          fi
+
+      # nih-plug's: the CLAP wrapper's host capability, VST3's note expressions and the production
+      # standalone's adapter (third_party/nih-plug/PATCHES.md, changes 18 to 22).
+      - name: nih-plug's wrapper and standalone tests
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/plugin-kit-vendored
+        run: cargo test --manifest-path third_party/nih-plug/Cargo.toml --features vst3,standalone-production --lib -- visibility_tests note_expressions production
+
+      # clap-wrapper's: the AUv2 wrapper's host capability on the real proxy dispatcher
+      # (third_party/clap-wrapper/PATCHES.md, change 7).
+      - name: clap-wrapper's host capability test
+        if: runner.os != 'Windows'
+        working-directory: third_party/clap-wrapper
+        run: |
+          libs=""; if [ "$RUNNER_OS" = Linux ]; then libs="-ldl"; fi
+          c++ -std=c++17 -DCLAP_WRAPPER_VERSION='"0.16.0"' -Isrc -Iinclude -Ilibs/fmt -I../clap/include \
+            tests/native-window-occlusion.cpp src/clap_proxy.cpp src/detail/clap/fsutil.cpp $libs \
+            -o "$RUNNER_TEMP/occlusion-test"
+          "$RUNNER_TEMP/occlusion-test"

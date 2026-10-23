@@ -9,9 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use baseview::{
-    Event, EventStatus, Size, Window, WindowHandler, WindowOpenOptions, WindowScalePolicy,
-};
+use baseview::{Event, EventStatus, Window, WindowHandler};
 use crossbeam::queue::ArrayQueue;
 use plugin_kit_standalone::{
     AppHandle, AppOptions, AudioBlock, AudioProcessor, MidiResetScope, ProcessConfig, SessionState,
@@ -238,6 +236,7 @@ pub struct Processor<P: Plugin> {
     input_right: Vec<f32>,
     rate: f32,
     initialized: bool,
+    panic_token: Option<u64>,
     init_executor: Arc<Mutex<TaskExecutor<P>>>,
     // Each callback-owned producer has exactly one consumer on the GUI or
     // background thread. There is no CAS retry loop in these callback queues.
@@ -285,6 +284,7 @@ where
                 input_right: Vec::new(),
                 rate: 48_000.0,
                 initialized: false,
+                panic_token: None,
                 init_executor,
                 gui_tasks: RefCell::new(gui_tasks),
                 background_tasks: RefCell::new(background_tasks),
@@ -375,7 +375,13 @@ where
         Ok(())
     }
 
+    fn panic_token(&mut self, token: Option<u64>) {
+        self.panic_token = token;
+    }
+
     fn process(&mut self, block: AudioBlock<'_>) {
+        // Consume even on an invalid block, and never retain metadata across direct calls.
+        let panic_token = self.panic_token.take();
         process_wrapper(|| {
             let frames = block.left.len();
             if !self.initialized || block.right.len() != frames || frames > self.input_left.len() {
@@ -434,6 +440,7 @@ where
                 session: &self.session,
                 midi: block.midi.iter(),
                 panic_channel: block.panic.then_some(0),
+                panic_token: block.panic.then_some(panic_token).flatten(),
                 transport: Transport::new(self.rate),
                 gui_tasks: &self.gui_tasks,
                 background_tasks: &self.background_tasks,
@@ -498,6 +505,7 @@ struct Processing<'a, P: Plugin> {
     session: &'a Session<P>,
     midi: std::slice::Iter<'a, plugin_kit_standalone::MidiEvent>,
     panic_channel: Option<u8>,
+    panic_token: Option<u64>,
     transport: Transport,
     gui_tasks: &'a RefCell<rtrb::Producer<P::BackgroundTask>>,
     background_tasks: &'a RefCell<rtrb::Producer<P::BackgroundTask>>,
@@ -511,6 +519,9 @@ where
     }
     fn take_standalone_panic(&mut self) -> bool {
         self.panic_channel.take().is_some()
+    }
+    fn standalone_panic_token(&self) -> Option<u64> {
+        self.panic_token
     }
     fn execute_background(&self, task: P::BackgroundTask) {
         if let Ok(mut producer) = self.background_tasks.try_borrow_mut() {
@@ -596,6 +607,12 @@ struct AppWindow<P: Plugin> {
 }
 impl<P: Plugin> WindowHandler for AppWindow<P> {
     fn on_frame(&mut self, window: &mut Window) {
+        // Quitting, as the editor asked (`app_window::request_quit`): the window closed as its
+        // close button closes it, and the app shut down as then, once `open_blocking` returns.
+        if app_window::quit_requested() {
+            window.close();
+            return;
+        }
         if self.session.error.swap(false, Ordering::AcqRel) {
             let _ = self.app.stop(
                 "The instrument could not process audio. Apply audio settings to restart it."
@@ -635,12 +652,12 @@ impl<P: Plugin> WindowHandler for AppWindow<P> {
             }
         }
         if self.session.resize.swap(false, Ordering::AcqRel) {
-            let (width, height) = self
+            let size = self
                 .editor
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .size();
-            window.resize(Size::new(f64::from(width), f64::from(height)));
+            app_window::fit(window, size);
         }
         if self.session.state_changed.swap(false, Ordering::AcqRel) {
             self.editor
@@ -649,7 +666,18 @@ impl<P: Plugin> WindowHandler for AppWindow<P> {
                 .param_values_changed();
         }
     }
-    fn on_event(&mut self, _window: &mut Window, _event: Event) -> EventStatus {
+    fn on_event(&mut self, window: &mut Window, event: Event) -> EventStatus {
+        if app_window::refits(&event) {
+            self.session.resize.store(true, Ordering::Release);
+        }
+        // (The window's own keys, where the editor's has not the keyboard: on X11, with the
+        // pointer outside the editor's.)
+        if let Event::Keyboard(key) = &event {
+            if app_window::quits(key) {
+                window.close();
+                return EventStatus::Captured;
+            }
+        }
         EventStatus::Ignored
     }
 }
@@ -740,48 +768,37 @@ where
         session: session.clone(),
         app: app.clone(),
     });
+    let options = app_window::options(P::NAME.to_owned(), editor.as_ref(), app_window::scale());
     let editor = Arc::new(Mutex::new(editor));
-    let (width, height) = editor
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .size();
-    Window::open_blocking(
-        WindowOpenOptions {
-            title: P::NAME.to_owned(),
-            size: Size::new(f64::from(width), f64::from(height)),
-            scale: WindowScalePolicy::SystemScaleFactor,
-            gl_config: None,
-        },
-        move |window| {
-            let parent = match window.raw_window_handle() {
-                raw_window_handle::RawWindowHandle::Xlib(handle) => {
-                    ParentWindowHandle::X11Window(handle.window as u32)
-                }
-                raw_window_handle::RawWindowHandle::Xcb(handle) => {
-                    ParentWindowHandle::X11Window(handle.window)
-                }
-                raw_window_handle::RawWindowHandle::AppKit(handle) => {
-                    ParentWindowHandle::AppKitNsView(handle.ns_view)
-                }
-                raw_window_handle::RawWindowHandle::Win32(handle) => {
-                    ParentWindowHandle::Win32Hwnd(handle.hwnd)
-                }
-                _ => panic!("The standalone window backend is unsupported."),
-            };
-            let handle = editor
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .spawn(parent, context);
-            AppWindow {
-                _editor_handle: handle,
-                editor,
-                session,
-                executor,
-                app,
-                audio_tasks: audio_gui_tasks,
+    Window::open_blocking(options, move |window| {
+        let parent = match window.raw_window_handle() {
+            raw_window_handle::RawWindowHandle::Xlib(handle) => {
+                ParentWindowHandle::X11Window(handle.window as u32)
             }
-        },
-    );
+            raw_window_handle::RawWindowHandle::Xcb(handle) => {
+                ParentWindowHandle::X11Window(handle.window)
+            }
+            raw_window_handle::RawWindowHandle::AppKit(handle) => {
+                ParentWindowHandle::AppKitNsView(handle.ns_view)
+            }
+            raw_window_handle::RawWindowHandle::Win32(handle) => {
+                ParentWindowHandle::Win32Hwnd(handle.hwnd)
+            }
+            _ => panic!("The standalone window backend is unsupported."),
+        };
+        let handle = editor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .spawn(parent, context);
+        AppWindow {
+            _editor_handle: handle,
+            editor,
+            session,
+            executor,
+            app,
+            audio_tasks: audio_gui_tasks,
+        }
+    });
     let closing = Instant::now();
     let result = runtime.shutdown();
     terminate.store(true, Ordering::Release);
@@ -797,3 +814,120 @@ where
         .map_err(|_| "The standalone task worker failed.".to_owned())?;
     result
 }
+
+/// The app's window and its editor's scale (the CA-72's `docs/decisions.md` R-WIN-STANDALONE).
+/// On Windows baseview made the process aware of each monitor's scale only once its first
+/// window was open, and scaled that window by its monitor's scale while the editor in it, told
+/// no scale, drew at 1: at 125 % and more the window opened a quarter or more larger than its
+/// editor, black beyond it (the CA-72's issue 64). Now the process is aware of each monitor's
+/// scale before anything is measured, and the window and the editor share the scale of the
+/// monitor it opens on. baseview's change 9 (`third_party/baseview/PATCHES.md`) leaves the
+/// window no frame to drag and no maximise box, which the editor does not follow; and on
+/// Windows a resize from outside (Windows scales a window whose monitor's scale changes) is
+/// undone at the next frame, [`refits`].
+///
+/// And its quitting (R-QUIT): every way of quitting the app closes its window, as its close
+/// button does, so that the app shuts down as then, its session saved, once the window's
+/// `open_blocking` returns. On macOS the application's menus are baseview's (its change 11:
+/// Quit ⌘Q, the Dock's Quit and logging out close the window); on Windows Alt+F4 is the
+/// system's (baseview leaves Alt's keys to `DefWindowProcW`, which closes the window); on
+/// Linux Ctrl+Q is the app's own, [`quits`], which the editor gives the window
+/// ([`request_quit`]) before any use of its own.
+pub mod app_window {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use baseview::{Event, Size, Window, WindowEvent, WindowOpenOptions, WindowScalePolicy};
+    use keyboard_types::{Key, KeyState, KeyboardEvent, Modifiers};
+
+    use crate::editor::Editor;
+
+    static QUIT: AtomicBool = AtomicBool::new(false);
+
+    /// Whether `key` is this system's shortcut for quitting an application, where the app's
+    /// windows are to act on it: Ctrl+Q on Linux (none on macOS, whose ⌘Q is the main menu's,
+    /// taken before any view has it, or on Windows, whose Alt+F4 is the system's).
+    pub fn quits(key: &KeyboardEvent) -> bool {
+        quits_on(std::env::consts::OS, key)
+    }
+
+    /// [`quits`] on `os` (as `std::env::consts::OS` names it): Ctrl+Q pressed on Linux, Shift
+    /// or not, with no other modifier, the Q of the keyboard's layout.
+    pub fn quits_on(os: &str, key: &KeyboardEvent) -> bool {
+        let others = Modifiers::ALT | Modifiers::ALT_GRAPH | Modifiers::META | Modifiers::SUPER;
+        os == "linux"
+            && key.state == KeyState::Down
+            && key.modifiers.contains(Modifiers::CONTROL)
+            && !key.modifiers.intersects(others)
+            && matches!(&key.key, Key::Character(c) if c.eq_ignore_ascii_case("q"))
+    }
+
+    /// Ask the app's window to close, as its close button does, at its next frame: the app's
+    /// editor's [`quits`] key, which reaches the editor's window and not the app's.
+    pub fn request_quit() {
+        QUIT.store(true, Ordering::Release);
+    }
+
+    /// Whether quitting has been asked for since this was last asked (once).
+    pub fn quit_requested() -> bool {
+        QUIT.swap(false, Ordering::AcqRel)
+    }
+
+    /// The scale the window opens at (the primary monitor's, where baseview opens it), the
+    /// process made aware of each monitor's scale first. None where the window's own scale
+    /// policy is kept (macOS, Linux), or where Windows does not say.
+    #[cfg(target_os = "windows")]
+    pub fn scale() -> Option<f32> {
+        use windows::Win32::Foundation::POINT;
+        use windows::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTOPRIMARY};
+        use windows::Win32::UI::HiDpi::{
+            GetDpiForMonitor, SetProcessDpiAwarenessContext,
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE, MDT_EFFECTIVE_DPI,
+        };
+        // SAFETY: plain calls with values of their own types. The awareness is baseview's,
+        // which it sets after its first window; it fails harmlessly if the process has one.
+        unsafe {
+            SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
+            let monitor = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+            let (mut x, mut y) = (0u32, 0u32);
+            GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut x, &mut y).ok()?;
+            (x > 0).then(|| x as f32 / 96.0)
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    pub fn scale() -> Option<f32> {
+        None
+    }
+
+    /// The window made its editor's `size` (logical pixels) at its scale.
+    pub fn fit(window: &mut Window, (width, height): (u32, u32)) {
+        window.resize(Size::new(f64::from(width), f64::from(height)));
+    }
+
+    /// Whether `event` asks for the window to be fitted to its editor again: on Windows, any
+    /// resize, the window's own (fitted already, which changes nothing) or one from outside
+    /// (a monitor's scale changed while the window was open: Windows scaled the window and left
+    /// the editor, which cannot change its scale once open). Not elsewhere, where a window
+    /// manager may keep a window at a size of its own, which the window would fight.
+    pub fn refits(event: &Event) -> bool {
+        cfg!(target_os = "windows") && matches!(event, Event::Window(WindowEvent::Resized(_)))
+    }
+
+    /// The window's options for `editor`: `scale` told the editor before it is first asked its
+    /// size, and the window at the same scale where it takes it (else the system's, as before).
+    pub fn options(title: String, editor: &dyn Editor, scale: Option<f32>) -> WindowOpenOptions {
+        let scale = scale.filter(|&s| editor.set_scale_factor(s));
+        let (width, height) = editor.size();
+        WindowOpenOptions {
+            title,
+            size: Size::new(f64::from(width), f64::from(height)),
+            scale: scale.map_or(WindowScalePolicy::SystemScaleFactor, |s| {
+                WindowScalePolicy::ScaleFactor(f64::from(s))
+            }),
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "production_tests.rs"]
+mod tests;

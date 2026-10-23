@@ -145,19 +145,21 @@ impl NoteExpressionController {
                 note,
                 vibrato: event.value as f32,
             }),
-            EXPRESSION_EXPRESSION_ID => Some(NoteEvent::PolyBrightness {
-                timing,
-                voice_id: Some(note_id),
-                channel,
-                note,
-                brightness: event.value as f32,
-            }),
-            BRIGHTNESS_EXPRESSION_ID => Some(NoteEvent::PolyExpression {
+            // (Upstream had these two the wrong way round; `translate_event_reverse` has them
+            // right. PATCHES.md, change 19, the CA-72's 16.)
+            EXPRESSION_EXPRESSION_ID => Some(NoteEvent::PolyExpression {
                 timing,
                 voice_id: Some(note_id),
                 channel,
                 note,
                 expression: event.value as f32,
+            }),
+            BRIGHTNESS_EXPRESSION_ID => Some(NoteEvent::PolyBrightness {
+                timing,
+                voice_id: Some(note_id),
+                channel,
+                note,
+                brightness: event.value as f32,
             }),
             _ => None,
         }
@@ -202,6 +204,47 @@ impl NoteExpressionController {
                 value: *brightness as f64,
             }),
             _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A host's brightness reaches the plug-in as brightness and its expression as expression,
+    /// both ways round (PATCHES.md, change 19, the CA-72's 16).
+    #[test]
+    fn brightness_and_expression_each_map_to_their_own() {
+        let mut c = NoteExpressionController::default();
+        c.register_note(&NoteOnEvent {
+            channel: 3,
+            pitch: 60,
+            tuning: 0.0,
+            velocity: 1.0,
+            length: 0,
+            note_id: 7,
+        });
+        let value = |type_id| NoteExpressionValueEvent {
+            type_id,
+            note_id: 7,
+            value: 0.25,
+        };
+        let brightness = c.translate_event::<()>(5, &value(BRIGHTNESS_EXPRESSION_ID));
+        assert!(matches!(
+            brightness,
+            Some(NoteEvent::PolyBrightness { timing: 5, channel: 3, note: 60, brightness, .. })
+                if brightness == 0.25
+        ));
+        let expression = c.translate_event::<()>(5, &value(EXPRESSION_EXPRESSION_ID));
+        assert!(matches!(
+            expression,
+            Some(NoteEvent::PolyExpression { expression, .. }) if expression == 0.25
+        ));
+        for event in [brightness.unwrap(), expression.unwrap()] {
+            let back = NoteExpressionController::translate_event_reverse(7, &event).unwrap();
+            let again = c.translate_event::<()>(5, &back).unwrap();
+            assert_eq!(again, event);
         }
     }
 }

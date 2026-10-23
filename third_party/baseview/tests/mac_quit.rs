@@ -102,7 +102,9 @@ mod macos {
             seen: handler_seen,
             first: Some(Box::new(first)),
         });
-        std::mem::take(&mut *seen.lock().unwrap())
+        // (Taken before `seen` goes: at a block's end its temporaries outlive its locals.)
+        let taken = std::mem::take(&mut *seen.lock().unwrap());
+        taken
     }
 
     /// No test waits for ever: a window that never closes fails the run.

@@ -93,6 +93,11 @@ mod macos {
         }
     }
 
+    /// An Objective-C class of AppKit's, by name.
+    fn class(name: &str) -> &'static AnyClass {
+        AnyClass::get(&std::ffi::CString::new(name).unwrap()).unwrap()
+    }
+
     fn scale_of(layer: &AnyObject) -> f64 {
         // SAFETY: a CALayer's scale factor.
         unsafe { msg_send![layer, contentsScale] }
@@ -107,18 +112,14 @@ mod macos {
                 return Vec::new();
             };
             let n: usize = msg_send![&*sublayers, count];
-            (0..n)
-                .map(|i| msg_send![&*sublayers, objectAtIndex: i])
-                .collect()
+            (0..n).map(|i| msg_send![&*sublayers, objectAtIndex: i]).collect()
         }
     }
 
     /// A frame of the view's size at `scale` shown on `surface`, every pixel of it.
     fn present(surface: &mut softbuffer::Surface<Target, Target>, scale: f64) {
         let (w, h) = ((W * scale).round() as u32, (H * scale).round() as u32);
-        surface
-            .resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap())
-            .unwrap();
+        surface.resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap()).unwrap();
         let mut buffer = surface.buffer_mut().unwrap();
         buffer.fill(0x003b_2213);
         buffer.present().unwrap();
@@ -130,10 +131,7 @@ mod macos {
         let reach = tiles.iter().fold((0.0f64, 0.0f64), |(r, b), t| {
             // SAFETY: a CALayer's frame.
             let f: NSRect = unsafe { msg_send![&**t, frame] };
-            (
-                r.max(f.origin.x + f.size.width),
-                b.max(f.origin.y + f.size.height),
-            )
+            (r.max(f.origin.x + f.size.width), b.max(f.origin.y + f.size.height))
         });
         (reach, tiles.iter().map(|t| scale_of(t)).collect())
     }
@@ -142,9 +140,9 @@ mod macos {
         // SAFETY: AppKit's classes and methods, on the main thread: the application, a window
         // (not shown) and its content view, the host's view.
         let (window, content) = unsafe {
-            let app = AnyClass::get(c"NSApplication").unwrap();
+            let app = class("NSApplication");
             let _: *mut AnyObject = msg_send![app, sharedApplication];
-            let class = AnyClass::get(c"NSWindow").unwrap();
+            let class = class("NSWindow");
             let window: Allocated<AnyObject> = msg_send![class, alloc];
             let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(W, H));
             // (Borderless, buffered.)
@@ -197,23 +195,15 @@ mod macos {
         // SAFETY: the method baseview's view answers to, as AppKit calls it.
         let _: () =
             unsafe { msg_send![&*view, viewDidChangeBackingProperties: None::<&AnyObject>] };
-        assert_eq!(
-            scale_of(&root),
-            backing,
-            "the view's layer left at another scale"
-        );
-        assert_eq!(
-            scale_of(&layer),
-            backing,
-            "softbuffer's layer left at another scale"
-        );
+        assert_eq!(scale_of(&root), backing, "the view's layer left at another scale");
+        assert_eq!(scale_of(&layer), backing, "softbuffer's layer left at another scale");
 
         // The frame for the window's scale shown: in tiles at that scale, filling the view (at
         // the old scale it reached half or twice as far).
         present(&mut surface, backing);
         let (reach, scales) = tiled(&layer);
         assert_eq!(reach, (W, H), "the frame not the view's size");
-        assert!(scales.iter().all(|&k| k == backing), "tiles at {scales:?}");
+        assert!(scales.iter().all(|&k| k == backing), "tiles at {:?}", scales);
         assert!(resized.lock().unwrap().iter().all(|&k| k == backing));
 
         drop(surface);

@@ -19,15 +19,12 @@ fn main() {
     // (The test's other process, which sends the quit event as the Dock does: AppKit's own
     // process would have its handler called at once, on the sending thread.)
     let arguments: Vec<String> = std::env::args().collect();
-    if let [_, flag, pid] = arguments.as_slice()
-        && flag == "--send-quit"
-    {
-        let (sent, error) = macos::send_quit(pid.parse().unwrap());
-        println!(
-            "{sent} {}",
-            error.map_or("none".to_string(), |e| e.to_string())
-        );
-        return;
+    if let [_, flag, pid] = arguments.as_slice() {
+        if flag == "--send-quit" {
+            let (sent, error) = macos::send_quit(pid.parse().unwrap());
+            println!("{sent} {}", error.map_or("none".to_string(), |e| e.to_string()));
+            return;
+        }
     }
     macos::watchdog();
     macos::command_q_closes_the_window_before_any_view_has_the_key();
@@ -41,7 +38,7 @@ fn main() {
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 mod macos {
-    use std::ffi::{CStr, CString, c_char, c_void};
+    use std::ffi::{c_char, c_void, CStr, CString};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -117,14 +114,19 @@ mod macos {
         });
     }
 
+    /// An Objective-C class of AppKit's or Foundation's, by name.
+    fn class(name: &str) -> &'static AnyClass {
+        AnyClass::get(&CString::new(name).unwrap()).unwrap()
+    }
+
     fn app() -> *mut AnyObject {
-        let class = AnyClass::get(c"NSApplication").unwrap();
+        let class = class("NSApplication");
         // SAFETY: the shared application, on the main thread.
         unsafe { msg_send![class, sharedApplication] }
     }
 
     fn string(text: &str) -> *mut AnyObject {
-        let class = AnyClass::get(c"NSString").unwrap();
+        let class = class("NSString");
         let text = CString::new(text).unwrap();
         // SAFETY: a NUL-terminated UTF-8 string, copied by NSString.
         unsafe { msg_send![class, stringWithUTF8String: text.as_ptr()] }
@@ -144,7 +146,7 @@ mod macos {
         let posted = Arc::new(AtomicBool::new(false));
         let was_posted = Arc::clone(&posted);
         let seen = open(move || {
-            let class = AnyClass::get(c"NSEvent").unwrap();
+            let class = class("NSEvent");
             let q = string("q");
             // NSEventTypeKeyDown, NSEventModifierFlagCommand, kVK_ANSI_Q.
             // SAFETY: NSEvent's own constructor, each argument of its type.
@@ -169,10 +171,7 @@ mod macos {
             was_posted.store(true, Ordering::Release);
         });
         assert!(posted.load(Ordering::Acquire), "⌘Q posted");
-        assert!(
-            seen.closed,
-            "⌘Q: the window closed as its close button closes it"
-        );
+        assert!(seen.closed, "⌘Q: the window closed as its close button closes it");
         assert_eq!(seen.keys, 0, "⌘Q: the key reached the view");
     }
 
@@ -217,21 +216,14 @@ mod macos {
         let (about, hide, quit) = (named("About"), named("Hide"), named("Quit"));
         let application = items(submenu(0));
         // (A separator's title is empty, its key none.)
-        let shown: Vec<_> = application
-            .into_iter()
-            .filter(|(title, ..)| !title.is_empty())
-            .collect();
+        let shown: Vec<_> =
+            application.into_iter().filter(|(title, ..)| !title.is_empty()).collect();
         assert_eq!(
             shown,
             menu(&[
                 (&about, "", command, "orderFrontStandardAboutPanel:"),
                 (&hide, "h", command, "hide:"),
-                (
-                    "Hide Others",
-                    "h",
-                    command | option,
-                    "hideOtherApplications:"
-                ),
+                ("Hide Others", "h", command | option, "hideOtherApplications:"),
                 ("Show All", "", command, "unhideAllApplications:"),
                 (&quit, "q", command, "terminate:"),
             ]),
@@ -263,27 +255,15 @@ mod macos {
     unsafe extern "C" {
         fn AECreateDesc(kind: u32, data: *const c_void, size: isize, result: *mut AEDesc) -> i16;
         fn AECreateAppleEvent(
-            class: u32,
-            id: u32,
-            target: *const AEDesc,
-            return_id: i16,
-            transaction_id: i32,
+            class: u32, id: u32, target: *const AEDesc, return_id: i16, transaction_id: i32,
             result: *mut AEDesc,
         ) -> i16;
         fn AESendMessage(
-            event: *const AEDesc,
-            reply: *mut AEDesc,
-            mode: i32,
-            timeout: isize,
+            event: *const AEDesc, reply: *mut AEDesc, mode: i32, timeout: isize,
         ) -> i32;
         fn AEGetParamPtr(
-            event: *const AEDesc,
-            keyword: u32,
-            desired: u32,
-            actual: *mut u32,
-            data: *mut c_void,
-            size: isize,
-            actual_size: *mut isize,
+            event: *const AEDesc, keyword: u32, desired: u32, actual: *mut u32, data: *mut c_void,
+            size: isize, actual_size: *mut isize,
         ) -> i16;
         fn AEDisposeDesc(desc: *mut AEDesc) -> i16;
     }
@@ -295,10 +275,7 @@ mod macos {
     /// The quit Apple event sent to process `pid`, its answer awaited: whether it was sent
     /// (0) and the error it was answered with, if any.
     pub fn send_quit(pid: i32) -> (i32, Option<i32>) {
-        let empty = || AEDesc {
-            descriptor_type: 0,
-            data_handle: std::ptr::null_mut(),
-        };
+        let empty = || AEDesc { descriptor_type: 0, data_handle: std::ptr::null_mut() };
         let (mut target, mut event, mut reply) = (empty(), empty(), empty());
         // SAFETY: Apple's C calls, each with its own types; every descriptor disposed.
         unsafe {
@@ -340,10 +317,7 @@ mod macos {
                     Some(String::from_utf8_lossy(&output.stdout).trim().to_string());
             });
         });
-        assert!(
-            seen.closed,
-            "quit: the window closed as its close button closes it"
-        );
+        assert!(seen.closed, "quit: the window closed as its close button closes it");
         // The answer comes once the handler has returned; the window closed in it.
         for _ in 0..100 {
             if answer.lock().unwrap().is_some() {
@@ -352,10 +326,6 @@ mod macos {
             std::thread::sleep(Duration::from_millis(50));
         }
         let answer = answer.lock().unwrap().take();
-        assert_eq!(
-            answer.as_deref(),
-            Some("0 none"),
-            "quit: sent, and answered with no error"
-        );
+        assert_eq!(answer.as_deref(), Some("0 none"), "quit: sent, and answered with no error");
     }
 }

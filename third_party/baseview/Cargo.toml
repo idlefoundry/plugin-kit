@@ -36,12 +36,10 @@ x11rb = "0.13.0"
 [[test]]
 name = "backing_scale"
 harness = false
-edition = "2024"
 
 [[test]]
 name = "mac_quit"
 harness = false
-edition = "2024"
 
 [target.'cfg(target_os="macos")'.dev-dependencies]
 objc2 = "0.6"

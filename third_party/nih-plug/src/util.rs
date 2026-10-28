@@ -194,3 +194,47 @@ mod tests {
         }
     }
 }
+
+/// Run detached offline work (a render made with no host) with the same flush-to-zero setting
+/// as the live wrappers' processing, restoring the calling thread's setting afterwards
+/// (PATCHES.md, change 23). Does not prohibit allocations.
+pub fn with_flush_to_zero<T>(f: impl FnOnce() -> T) -> T {
+    crate::wrapper::util::with_flush_to_zero(f)
+}
+
+#[cfg(test)]
+mod flush_to_zero_tests {
+    use std::hint::black_box;
+
+    /// Half the smallest normal `f32`: a subnormal, unless flushed to zero.
+    fn half_the_least_normal() -> f32 {
+        black_box(f32::MIN_POSITIVE) / black_box(2.0)
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(any(target_feature = "sse", target_arch = "aarch64")),
+        ignore = "no flush-to-zero mode on this processor"
+    )]
+    fn offline_work_is_flushed_to_zero_and_the_threads_mode_put_back() {
+        let before = half_the_least_normal();
+        assert!(before > 0.0, "the thread starts without flush-to-zero");
+        let inside = super::with_flush_to_zero(half_the_least_normal);
+        assert_eq!(
+            inside, 0.0,
+            "a subnormal result flushed, as in a host's process call"
+        );
+        // Nested, as an offline render inside a host's process call would be: still flushed,
+        // and the outer guard alone puts the thread's mode back.
+        let nested = super::with_flush_to_zero(|| {
+            super::with_flush_to_zero(|| ());
+            half_the_least_normal()
+        });
+        assert_eq!(nested, 0.0);
+        assert_eq!(
+            half_the_least_normal(),
+            before,
+            "the thread's own mode afterwards"
+        );
+    }
+}

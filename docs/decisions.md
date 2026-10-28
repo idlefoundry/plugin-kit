@@ -886,3 +886,44 @@ releases and 25 presses. The focus test, which opens a window of its own, ran th
 mistake (a test filter that matched its name): it passed too, Hyprland's XWayland sending the
 focus events as Xvfb does. Not built on the Mac (macOS's code is unchanged but for the method
 that answers `true`); GitHub's runners build and run it.
+
+## K-CA72-0.3. The standalone's size told to X11, and offline work flushed to zero (baseview 13, nih-plug 23)
+
+**The owner, 2026-10-27**, asked for all of the CA-72's features in the CA-74 (Highstead), and
+with them the two changes to these crates the CA-72 has made since K-CA72-0.2.8 that the kit
+lacks: baseview's change 13 (the CA-72's `db7e20a`, 2026-10-27) and nih-plug's
+`util::with_flush_to_zero` (its `third_party/nih-plug/PATCHES.md`, "Detached offline
+rendering", its R-REFERENCE-AUDIO), which K-CA72-0.2.8 left out as the CA-72's 0.3 alone.
+The owner was asleep: the branch, `w4/kit` from `a0de4f2`, is local and waits for the owner to
+push and merge it.
+
+**Agent decisions, 2026-10-27** (Highstead's round-4 tooling worker; not separately approved):
+- **baseview 13 is the CA-72's, byte for byte** (`git apply` of `db7e20a`'s three files under
+  `src/x11/`), its `PATCHES.md` entry with it, placed after change 12 and before the note on
+  upstream's rewrite; the count in the list's head and the README's is three for Linux.
+- **nih-plug's is change 23**, numbered after the kit's 22; the code is the CA-72's (a public
+  `util::with_flush_to_zero` over the wrappers' own `ScopedFtz`, without `assert_no_alloc`).
+  The CA-72 has no test of it; the kit's
+  `offline_work_is_flushed_to_zero_and_the_threads_mode_put_back` is new (a subnormal result
+  flushed inside, nested too, the thread's mode as it was outside).
+- **CI** runs it with nih-plug's other library tests (`flush_to_zero` added to the filter);
+  baseview's step already runs every library test.
+- **0.3.1 still:** a fix and an addition.
+
+**What a plug-in must do to have each:**
+- baseview 13: nothing. A window of its own (a standalone's) now tells X11's window manager
+  its size as its least and greatest, at opening and at each `Window::resize`, so a tiling
+  manager floats it at that size; a plug-in's editor in a host's window is unchanged.
+- nih-plug 23: a render made with no host wraps its processing in
+  `nih_plug::util::with_flush_to_zero(|| ...)` to give a host's samples where denormals
+  arise; a plug-in that compares such a render with one made without it (Highstead's
+  `preset_render`, its agents' renders) should expect them to differ there, and check.
+
+**Evidence (oma-laptop, Linux, Omarchy, 2026-10-27, rustc 1.97.1, no ngspice, load 5 to 11 from
+other work, nothing timed):** `cargo fmt --all -- --check`; `cargo clippy --workspace
+--all-targets -- -D warnings`; `cargo test --workspace --no-fail-fast` (127 passed, 3 ignored:
+ngspice's tests skip without it, as they say); nih_plug_derive's 17; baseview's library tests (8,
+the two of change 13 among them); nih-plug's 10 (`visibility_tests` 3, `note_expressions` 1,
+`production` 5, `flush_to_zero` 1) with `vst3,standalone-production`. Failing without its
+change: the flush-to-zero test (a subnormal left as it was). Not run: `x11_expose` (no Xvfb on
+this machine), the Mac and Windows, and a graphical check of change 13 under Hyprland.

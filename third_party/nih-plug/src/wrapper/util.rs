@@ -214,6 +214,14 @@ pub fn process_wrapper<T, F: FnOnce() -> T>(f: F) -> T {
     }
 }
 
+/// Match the wrapper's floating point environment on a detached offline thread (PATCHES.md,
+/// change 23). Offline renderers allocate their output buffers, so this deliberately omits
+/// `assert_no_alloc`.
+pub fn with_flush_to_zero<T>(f: impl FnOnce() -> T) -> T {
+    let _ftz_guard = ScopedFtz::enable();
+    f()
+}
+
 /// Enable the CPU's Flush To Zero flag while this object is in scope. If the flag was not already
 /// set, it will be restored to its old value when this gets dropped.
 struct ScopedFtz {

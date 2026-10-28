@@ -13,11 +13,9 @@ today's rustfmt gives it, so that `cargo fmt --all` leaves the tree as it is.
 
 Six changes for Windows (1 to 3, 5, 6 and 9), in `src/win/window.rs`, `src/win/drop_target.rs`,
 `src/win/escape.rs`, `src/event.rs` and `src/window.rs` (the first three the CA-72's
-`docs/decisions.md` R26, R28 and R34), four for macOS (4, 7, 8 and 11) and three for Linux (10,
-12 and 14, below). Changes 8 to 12 are the CA-72's, numbered as it numbers them (`docs/decisions.md`
-K-CA72-0.2.8); their tests are here, run as each says, and the kit's CI runs them. The CA-72's
-change 13 (a standalone's window held to its size for Hyprland) is not here; 14 is numbered after
-it so that the copies keep one numbering.
+`docs/decisions.md` R26, R28 and R34), four for macOS (4, 7, 8 and 11) and four for Linux (10,
+12, 13 and 14, below). Changes 8 to 14 keep the CA-72's numbering. Their tests are
+here, and the kit's CI runs them.
 
 1. **The window procedure never calls the handler while it is busy.** baseview keeps the
    window's handler in a `RefCell` and borrows it for each event. A message can be sent to
@@ -263,6 +261,25 @@ R-LINUX-RESIZE, its issue #65, 2026-10-20):
    window of its own three times and waits for `Damaged` at its new size; with the `Expose` arm
    taken out it times out. The CA-72's test of its editor's panel
    (`a_panel_grown_is_shown_again_as_x_asks`) stays with it.
+
+And one more for Linux, in `src/x11/window.rs` and `src/x11/window_identity.rs` (the CA-72's
+`db7e20a`, 2026-10-27):
+
+13. **On X11, a window of its own tells the window manager its size.** The window had no
+   `WM_NORMAL_HINTS`, so a tiling window manager sized it as it liked. On Omarchy (Hyprland
+   with XWayland, a 2560 × 1600 screen at 1.6) the CA-72's standalone was tiled to 2522 × 1520
+   pixels around an editor of 2048 × 1170: the panel in the top left corner, black to the right
+   and below. Floated by hand, it took a size Hyprland chose, 1251 × 1520, cutting the panel
+   off on the right. nih-plug's standalone does not refit its editor to a size it did not ask
+   for on Linux (`refits`, so as not to fight the window manager), and the editor cannot
+   follow such a size. Now a window with no parent gets, before it is mapped, its size as
+   both its least and its greatest (`PMinSize | PMaxSize`), and again before each
+   `Window::resize` it asks for. Hyprland floats an XWayland window whose least and greatest
+   sizes are equal: the same standalone opened floating at 1281 × 732 logical pixels (2050 ×
+   1171), the panel filling it. A parented window (a plug-in's editor in a host) is
+   unchanged. Tests `a_window_of_its_own_is_held_to_its_size` and
+   `a_size_of_nothing_is_held_to_a_pixel` (`src/x11/window_identity/tests.rs`) check the
+   request; a resize under Hyprland (the drawer, PANEL, the grip) still needs a graphical check.
 
 And one more for Linux, in `src/x11/key_repeat.rs`, `src/x11/event_loop.rs`,
 `src/x11/xcb_connection.rs`, `src/x11/window.rs` and `src/window.rs` (`docs/decisions.md`

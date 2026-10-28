@@ -90,7 +90,7 @@ jobs:
       # baseview's own: the X11 requests (every system), the Windows windows' styles and keys,
       # the macOS windows' scale and quitting (on the main thread), and on Linux under Xvfb a
       # window grown and a key held through the server's repeats (third_party/baseview/PATCHES.md,
-      # changes 6, 8 to 12 and 14).
+      # changes 6 and 8 to 14).
       - name: baseview's window tests
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/plugin-kit-vendored
@@ -100,12 +100,13 @@ jobs:
             xvfb-run -a cargo test --manifest-path third_party/baseview/Cargo.toml --test x11_expose --test x11_key_repeat -- --ignored --test-threads=1
           fi
 
-      # nih-plug's: the CLAP wrapper's host capability, VST3's note expressions and the production
-      # standalone's adapter (third_party/nih-plug/PATCHES.md, changes 18 to 22).
+      # nih-plug's: the CLAP wrapper's host capability, VST3's note expressions, the production
+      # standalone's adapter and offline work's flush-to-zero (third_party/nih-plug/PATCHES.md,
+      # changes 18 to 23).
       - name: nih-plug's wrapper and standalone tests
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/plugin-kit-vendored
-        run: cargo test --manifest-path third_party/nih-plug/Cargo.toml --features vst3,standalone-production --lib -- visibility_tests note_expressions production
+        run: cargo test --manifest-path third_party/nih-plug/Cargo.toml --features vst3,standalone-production --lib -- visibility_tests note_expressions production flush_to_zero
 
       # clap-wrapper's: the AUv2 wrapper's host capability on the real proxy dispatcher
       # (third_party/clap-wrapper/PATCHES.md, change 7).

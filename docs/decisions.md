@@ -811,3 +811,78 @@ allocation guard. Not built here on macOS or Windows.
 **Owner decision, 2026-10-28.** Shown Malleator's R40 at work and its tools for presets and
 modulation (23 in all, through this crate unchanged), the owner said yes to merging this branch
 into main and to the CA-72 moving onto the crate.
+
+## K-X11-REPEAT. A held key is one press and its repeats on X11 (baseview change 14)
+
+**The owner, 2026-10-28** (through the CA-72's coordinator), of the held computer keys that
+Malleator had first worked round in the plug-in (its `docs/decisions.md` R35): "fix it properly
+in the shared toolkit, plugin-kit", with no grace period in place of the real fix, and timing no
+constraint.
+
+**The fault:** X11 repeats a held key itself and sends each repeat as a release and a press;
+baseview marked no X11 key event as a repeat. A plug-in's editor or standalone was told the key
+was let go and struck again some 25 times a second: Malleator's, the CA-72's and the CA-74's
+typed notes were struck again while held, and their octave keys stepped while held. Malleator's
+R35 held each release back 40 ms on Linux and took a press within it for a repeat; it named the
+kit-level fix and left it to the kit.
+
+**Agent decisions, 2026-10-28** (the CA-72's worker; not separately approved but for the owner's
+choice above), baseview's `PATCHES.md` change 14:
+- **Detectable auto-repeat, asked for and checked.** Each window's own connection asks the
+  server for XKB's detectable auto-repeat (`XkbSetDetectableAutoRepeat`; per client, so a host's
+  connections are untouched) and keeps whether it was granted (the call's answer and its
+  `supported` mask both): `Window::key_repeats_detectable()`. The server then sends presses
+  alone while the key is held, and its release once it is let go.
+- **A press of a key down is a repeat.** The event loop keeps the keys down by keycode
+  (`src/x11/key_repeat.rs`) and marks such a press `repeat: true`. Nothing waits: a release
+  reaches the handler at once (R35's grace delayed each by 40 ms).
+- **Without it, the server's pair is a repeat.** Each event is read with the one after it, if it
+  has come (xcb's `poll_for_event`, as `XPending` and `XPeekEvent` do for Xlib): a release then
+  a press of the same key in the same window at the same server time is the server's repeat,
+  the classic signature; the release is dropped and the press marked. Always on: with the flag
+  granted the server sends no such pairs. No plug-in sees a release while a key is held, on a
+  server with or without XKB's flag.
+- **The keys down forgotten when a release may go elsewhere,** so that a key let go meanwhile
+  is struck afresh rather than taken for a repeat: at each `FocusIn` and `FocusOut` (the window
+  now selects focus changes) and, for a parented window, at `LeaveNotify`.
+- **A window of its own is told of the focus,** `Focused` and `Unfocused`, as on Windows and
+  macOS (on X11 it was told nothing): a standalone can let its notes go as the focus leaves, the
+  key's release then going to another window. Not for a grab's passing focus, nor the focus
+  moving within the window or following the pointer. A parented window's handler is told
+  nothing new.
+- **Tests:** five unit tests of `KeyRepeats` on every system, and `tests/x11_key_repeat.rs`
+  (Linux, an X server, ignored; in CI under Xvfb) holding A with XTEST: with the flag; with the
+  flag turned off again on baseview's own connection (the fallback, on a real server); and the
+  focus taken away and given back while A is held.
+- **Numbered 14,** after the CA-72's change 13 (a standalone held to its size for Hyprland),
+  which the kit has not taken, so that the copies keep one numbering.
+
+**What a plug-in must do to take it:** move every kit `rev` (baseview's among them) to this
+commit and show its sound unchanged (its `preset_render`, as the README asks); then:
+- an editor that already ignores a press marked `repeat` for a key it holds needs nothing
+  more: on Linux its held keys and octave keys now behave as on Windows and macOS;
+- an editor that worked round the fault (Malleator's R35: `GRACE` and `Keys::settle` in
+  `editor/app.rs`) takes the workaround out, or its releases stay 40 ms late for nothing;
+- a standalone's editor on Linux is now told `Unfocused` as its window loses the focus, and
+  `Focused` as it gains it: whatever it does there on Windows and macOS (letting notes go,
+  ending gestures, closing menus) now happens on Linux too. An editor that tracks the focus
+  from these events should start as focused: the first `Focused` may come before or after its
+  first frame, and a server whose focus follows the pointer sends none.
+
+**Evidence (omarchy, Linux, 2026-10-28, rustc 1.97.1, ngspice 47):** `cargo fmt --all --
+--check`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo test --workspace
+--no-fail-fast` with `REQUIRE_NGSPICE=1`, 127 passed, 3 ignored; nih-plug's 9
+(`visibility_tests`, `note_expressions`, `production`, with `vst3,standalone-production`);
+baseview's Clippy with warnings denied, for Linux and for `x86_64-pc-windows-gnu`; its 11
+library tests; under Xvfb `x11_expose` and `x11_key_repeat`'s 3. The held A, 1.6 s: before
+the change 25 releases and 25 presses, every one unmarked; after, 1 press, 24 repeats and 1
+release. With the event loop's pairing taken out the first test still passes (the flag alone)
+and the fallback's fails; with the change taken out all three fail.
+
+**Evidence (oma-laptop, Omarchy 4.0.6, Hyprland's XWayland `:0`, 2026-10-28):** the test
+binary built on omarchy and run under XWayland: `XkbSetDetectableAutoRepeat` granted; the held A
+1 press, 24 repeats and 1 release, with the flag and without it; the unchanged baseview's 25
+releases and 25 presses. The focus test, which opens a window of its own, ran there once by
+mistake (a test filter that matched its name): it passed too, Hyprland's XWayland sending the
+focus events as Xvfb does. Not built on the Mac (macOS's code is unchanged but for the method
+that answers `true`); GitHub's runners build and run it.

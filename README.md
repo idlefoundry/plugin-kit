@@ -24,7 +24,7 @@ move onto it one at a time; until one has, it keeps its own copies.
 | `crates/plugin-kit-agent` | Agents operate a standalone instrument through MCP: a stdio bridge an agent's client starts, a local socket (owner-only, no TCP) the application opens only when the player allows it, discovery of running instances, and an inbox answered on the window thread; the instrument supplies its name and its tools (K-AGENT) |
 | `crates/plugin-kit-queue` | Packed atomic event/frame queues with one-attempt operations: no unsafe code, allocation, retry loop or dependency on an audio backend |
 | `third_party/nih-plug` | The plug-in framework, at upstream's commit with twenty-two changes (`PATCHES.md`) |
-| `third_party/baseview` | The editor's and the standalones' windows, with six changes for Windows, four for macOS and two for Linux (`PATCHES.md`) |
+| `third_party/baseview` | The editor's and the standalones' windows, with six changes for Windows, four for macOS and three for Linux (`PATCHES.md`) |
 | `third_party/softbuffer` | The editor's pixels, at the 0.4.8 release with two changes for macOS: for hosts that load several plug-ins into one process, and the frame kept and shown in tiles, only where it changed (`PATCHES.md`) |
 | `third_party/clap-wrapper`, `clap`, `AudioUnitSDK` | The Audio Unit, built from a plug-in's CLAP (`clap-wrapper/PATCHES.md`, `VENDORED.md`) |
 

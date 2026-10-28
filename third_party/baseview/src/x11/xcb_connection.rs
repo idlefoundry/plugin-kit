@@ -32,6 +32,8 @@ pub struct XcbConnection {
     pub(crate) resources: resource_manager::Database,
     pub(crate) cursor_handle: CursorHandle,
     pub(super) cursor_cache: RefCell<HashMap<MouseCursor, u32>>,
+    /// Whether the server sends a held key's repeats as presses alone (PATCHES.md, change 14).
+    pub(crate) detectable_auto_repeat: bool,
 }
 
 impl XcbConnection {
@@ -44,6 +46,14 @@ impl XcbConnection {
         let conn = unsafe { XCBConnection::from_raw_xcb_connection(xcb_connection, false)? };
         unsafe {
             xlib_xcb::XSetEventQueueOwner(dpy, xlib_xcb::XEventQueueOwner::XCBOwnsEventQueue)
+        };
+        // A held key's repeats as presses alone, its release only once it is let go: XKB's
+        // detectable auto-repeat, for this connection alone. A server that has it not (no XKB,
+        // or the flag refused) sends each repeat as a release and a press, which the event loop
+        // takes for a repeat by itself (PATCHES.md, change 14).
+        let detectable_auto_repeat = unsafe {
+            let mut supported = 0;
+            xlib::XkbSetDetectableAutoRepeat(dpy, xlib::True, &mut supported) != 0 && supported != 0
         };
 
         let atoms = Atoms::new(&conn)?.reply()?;
@@ -58,6 +68,7 @@ impl XcbConnection {
             resources,
             cursor_handle,
             cursor_cache: RefCell::new(HashMap::new()),
+            detectable_auto_repeat,
         })
     }
 

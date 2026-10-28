@@ -120,6 +120,21 @@ impl<'a> Window<'a> {
         let _ = wanted;
     }
 
+    /// Whether the system marks a held key's repeats itself (Windows, macOS, and an X server with
+    /// XKB's detectable auto-repeat), rather than baseview telling them from a release and a press
+    /// at one time (an X server without it). Either way a repeat reaches the handler as a press
+    /// marked `repeat`, with no release before it (PATCHES.md, change 14).
+    #[cfg(target_os = "linux")]
+    pub fn key_repeats_detectable(&self) -> bool {
+        self.window.inner.xcb_connection.detectable_auto_repeat
+    }
+
+    /// Whether the system marks a held key's repeats itself: on Windows and macOS it does.
+    #[cfg(not(target_os = "linux"))]
+    pub fn key_repeats_detectable(&self) -> bool {
+        true
+    }
+
     /// If provided, then an OpenGL context will be created for this window. You'll be able to
     /// access this context through [crate::Window::gl_context].
     #[cfg(feature = "opengl")]

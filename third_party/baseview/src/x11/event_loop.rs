@@ -1,5 +1,6 @@
 use crate::x11::keyboard::{convert_key_press_event, convert_key_release_event, key_mods};
 use crate::x11::{ParentHandle, Window, WindowInner};
+use crate::x11_key_repeat::KeyRepeats;
 use crate::{
     Event, MouseButton, MouseEvent, PhyPoint, PhySize, ScrollDelta, WindowEvent, WindowHandler,
     WindowInfo,
@@ -8,6 +9,7 @@ use std::error::Error;
 use std::os::fd::AsRawFd;
 use std::time::{Duration, Instant};
 use x11rb::connection::Connection;
+use x11rb::protocol::xproto::{NotifyDetail, NotifyMode};
 use x11rb::protocol::Event as XEvent;
 
 pub(super) struct EventLoop {
@@ -19,6 +21,8 @@ pub(super) struct EventLoop {
     /// Whether the X server asked, in the events drained, for part of the window to be drawn
     /// again (PATCHES.md, change 12).
     exposed: bool,
+    /// The keys down, to tell the server's repeats from presses (PATCHES.md, change 14).
+    keys: KeyRepeats,
     frame_interval: Duration,
     event_loop_running: bool,
 }
@@ -36,6 +40,7 @@ impl EventLoop {
             event_loop_running: false,
             new_physical_size: None,
             exposed: false,
+            keys: KeyRepeats::default(),
         }
     }
 
@@ -47,8 +52,12 @@ impl EventLoop {
         self.new_physical_size = None;
         self.exposed = false;
 
-        while let Some(event) = self.window.xcb_connection.conn.poll_for_event()? {
-            self.handle_xcb_event(event);
+        // Each event with the one after it, if it has come: a release followed by a press may be
+        // the server's repeat (PATCHES.md, change 14).
+        let mut next = self.window.xcb_connection.conn.poll_for_event()?;
+        while let Some(event) = next.take() {
+            next = self.window.xcb_connection.conn.poll_for_event()?;
+            self.handle_xcb_event(event, next.as_ref());
         }
 
         if let Some(size) = self.new_physical_size.take() {
@@ -143,7 +152,7 @@ impl EventLoop {
         Ok(())
     }
 
-    fn handle_xcb_event(&mut self, event: XEvent) {
+    fn handle_xcb_event(&mut self, event: XEvent, next: Option<&XEvent>) {
         // For all the keyboard and mouse events, you can fetch
         // `x`, `y`, `detail`, and `state`.
         // - `x` and `y` are the position inside the window where the cursor currently is
@@ -229,6 +238,11 @@ impl EventLoop {
             }
 
             XEvent::LeaveNotify(_) => {
+                // A window in another's has the keys only while the pointer is in it (the host's
+                // window has the focus): a key let go from now on is let go elsewhere.
+                if !self.window.top_level {
+                    self.keys.forget();
+                }
                 self.handler.on_event(
                     &mut crate::Window::new(Window { inner: &self.window }),
                     Event::Mouse(MouseEvent::CursorLeft),
@@ -279,18 +293,49 @@ impl EventLoop {
             ////
             // keys
             ////
+            // A press of a key already down, or the press of the server's release-and-press
+            // pair, is one of its repeats; the pair's release is not given (PATCHES.md, change
+            // 14).
             XEvent::KeyPress(event) => {
+                let mut key = convert_key_press_event(&event);
+                key.repeat = self.keys.press(&event);
                 self.handler.on_event(
                     &mut crate::Window::new(Window { inner: &self.window }),
-                    Event::Keyboard(convert_key_press_event(&event)),
+                    Event::Keyboard(key),
                 );
             }
 
             XEvent::KeyRelease(event) => {
-                self.handler.on_event(
-                    &mut crate::Window::new(Window { inner: &self.window }),
-                    Event::Keyboard(convert_key_release_event(&event)),
-                );
+                if self.keys.release(&event, next) {
+                    self.handler.on_event(
+                        &mut crate::Window::new(Window { inner: &self.window }),
+                        Event::Keyboard(convert_key_release_event(&event)),
+                    );
+                }
+            }
+
+            // The keyboard's focus come or gone: the keys down forgotten (a key's release may go
+            // elsewhere), and a window of its own told, as on Windows and macOS. Not for a grab's
+            // passing focus (a window manager's shortcut, a window dragged), nor for the focus
+            // moving within the window or following the pointer (PATCHES.md, change 14).
+            XEvent::FocusIn(event) => {
+                self.keys.forget();
+                if self.window.top_level && real_focus(event.mode, event.detail) {
+                    self.handler.on_event(
+                        &mut crate::Window::new(Window { inner: &self.window }),
+                        Event::Window(WindowEvent::Focused),
+                    );
+                }
+            }
+
+            XEvent::FocusOut(event) => {
+                self.keys.forget();
+                if self.window.top_level && real_focus(event.mode, event.detail) {
+                    self.handler.on_event(
+                        &mut crate::Window::new(Window { inner: &self.window }),
+                        Event::Window(WindowEvent::Unfocused),
+                    );
+                }
             }
 
             _ => {}
@@ -310,6 +355,19 @@ impl EventLoop {
 
         self.event_loop_running = false;
     }
+}
+
+/// A focus event of the keyboard's focus itself coming to or leaving the window: not a grab's,
+/// nor one within the window (`Inferior`) or of the focus following the pointer.
+fn real_focus(mode: NotifyMode, detail: NotifyDetail) -> bool {
+    matches!(mode, NotifyMode::NORMAL | NotifyMode::WHILE_GRABBED)
+        && matches!(
+            detail,
+            NotifyDetail::ANCESTOR
+                | NotifyDetail::VIRTUAL
+                | NotifyDetail::NONLINEAR
+                | NotifyDetail::NONLINEAR_VIRTUAL
+        )
 }
 
 fn mouse_id(id: u8) -> MouseButton {

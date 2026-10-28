@@ -88,15 +88,16 @@ jobs:
         run: CARGO_TARGET_DIR="$RUNNER_TEMP/plugin-kit-derive" cargo test --manifest-path third_party/nih-plug/nih_plug_derive/Cargo.toml
 
       # baseview's own: the X11 requests (every system), the Windows windows' styles and keys,
-      # the macOS windows' scale and quitting (on the main thread), and on Linux a window grown
-      # under Xvfb (third_party/baseview/PATCHES.md, changes 6 and 8 to 12).
+      # the macOS windows' scale and quitting (on the main thread), and on Linux under Xvfb a
+      # window grown and a key held through the server's repeats (third_party/baseview/PATCHES.md,
+      # changes 6, 8 to 12 and 14).
       - name: baseview's window tests
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/plugin-kit-vendored
         run: |
           cargo test --manifest-path third_party/baseview/Cargo.toml --no-fail-fast
           if [ "$RUNNER_OS" = Linux ]; then
-            xvfb-run -a cargo test --manifest-path third_party/baseview/Cargo.toml --test x11_expose -- --ignored
+            xvfb-run -a cargo test --manifest-path third_party/baseview/Cargo.toml --test x11_expose --test x11_key_repeat -- --ignored --test-threads=1
           fi
 
       # nih-plug's: the CLAP wrapper's host capability, VST3's note expressions and the production

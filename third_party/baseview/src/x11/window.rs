@@ -99,6 +99,9 @@ pub(crate) struct WindowInner {
     pub(crate) window_info: WindowInfo,
     visual_id: Visualid,
     mouse_cursor: Cell<MouseCursor>,
+    /// A window of its own (no parent), whose handler is told of the keyboard's focus (PATCHES.md,
+    /// change 14).
+    pub(crate) top_level: bool,
 
     pub(crate) close_requested: Cell<bool>,
 
@@ -224,6 +227,8 @@ impl<'a> Window<'a> {
                         | EventMask::BUTTON_RELEASE
                         | EventMask::KEY_PRESS
                         | EventMask::KEY_RELEASE
+                        // The keys' focus, for their repeats (PATCHES.md, change 14).
+                        | EventMask::FOCUS_CHANGE
                         | EventMask::STRUCTURE_NOTIFY
                         | EventMask::ENTER_WINDOW
                         | EventMask::LEAVE_WINDOW,
@@ -276,6 +281,7 @@ impl<'a> Window<'a> {
             window_info,
             visual_id: visual_info.visual_id,
             mouse_cursor: Cell::new(MouseCursor::default()),
+            top_level: parent.is_none(),
 
             close_requested: Cell::new(false),
 

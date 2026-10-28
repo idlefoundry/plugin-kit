@@ -19,6 +19,11 @@ mod window_open_options;
 #[path = "x11/window_identity.rs"]
 mod x11_window_identity;
 
+// A held key's repeats, as X11 sends them (PATCHES.md, change 14): tested on every platform.
+#[cfg(any(target_os = "linux", test))]
+#[path = "x11/key_repeat.rs"]
+mod x11_key_repeat;
+
 #[cfg(feature = "opengl")]
 pub mod gl;
 

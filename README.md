@@ -23,7 +23,7 @@ move onto it one at a time; until one has, it keeps its own copies.
 | `crates/plugin-kit-standalone` | Standalone instruments' audio/MIDI settings, safe stream ownership, routing, capture-clock adaptation, recovery and atomic sessions; CPAL 0.15.3 and midir 0.9.1, with a processor/editor adapter supplied by the instrument (`docs/standalone.md`) |
 | `crates/plugin-kit-queue` | Packed atomic event/frame queues with one-attempt operations: no unsafe code, allocation, retry loop or dependency on an audio backend |
 | `third_party/nih-plug` | The plug-in framework, at upstream's commit with twenty-two changes (`PATCHES.md`) |
-| `third_party/baseview` | The editor's and the standalones' windows, with six changes for Windows, four for macOS and two for Linux (`PATCHES.md`) |
+| `third_party/baseview` | The editor's and the standalones' windows, with six changes for Windows, four for macOS and three for Linux (`PATCHES.md`) |
 | `third_party/softbuffer` | The editor's pixels, at the 0.4.8 release with two changes for macOS: for hosts that load several plug-ins into one process, and the frame kept and shown in tiles, only where it changed (`PATCHES.md`) |
 | `third_party/clap-wrapper`, `clap`, `AudioUnitSDK` | The Audio Unit, built from a plug-in's CLAP (`clap-wrapper/PATCHES.md`, `VENDORED.md`) |
 

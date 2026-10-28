@@ -28,8 +28,9 @@ keyboard-types = { version = "0.6.1", default-features = false }
 raw-window-handle = "0.5"
 
 [dev-dependencies]
-# Record the actual X11 requests in tests, including on macOS and Windows.
-x11rb = "0.13.0"
+# Record the actual X11 requests in tests, including on macOS and Windows; and hold a key on an
+# X server, as a keyboard does (XTEST: `tests/x11_key_repeat.rs`, PATCHES.md change 14).
+x11rb = { version = "0.13.0", features = ["xtest"] }
 
 # The macOS window tests (PATCHES.md, changes 8 and 11), the CA-72's: on the main thread, which
 # AppKit requires and the test harness runs none on. Elsewhere they do nothing.

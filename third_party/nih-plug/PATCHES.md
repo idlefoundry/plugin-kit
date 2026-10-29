@@ -295,3 +295,10 @@ a number of their own there (`docs/decisions.md` K-CA72-0.2.8):
 To move to a newer upstream commit, copy its `Cargo.toml`, `LICENSE`, `README.md`, `src`
 and `nih_plug_derive` here and apply the twenty-three changes again, unless upstream has fixed them.
 Then update the commit above, and `nih_plug_xtask`'s `rev` in each plug-in's workspace `Cargo.toml`.
+
+24. **An application can act as its window begins to close.** The production standalone
+    exposes `app_window::on_closing(fn())`, called once before closing from a quit request,
+    shortcut or WillClose, with Drop as fallback. The first callback registration wins.
+    This ports CA-72 commit 5fbc5da (R-QUIT-NAP): an instrument uses it to lift macOS App Nap
+    while it saves and shuts down. The framework itself makes no App Nap request.
+    `closing_calls_the_first_registered_hook_exactly_once` covers registration and repetition.

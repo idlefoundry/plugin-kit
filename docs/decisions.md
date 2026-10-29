@@ -927,3 +927,18 @@ the two of change 13 among them); nih-plug's 10 (`visibility_tests` 3, `note_exp
 `production` 5, `flush_to_zero` 1) with `vst3,standalone-production`. Failing without its
 change: the flush-to-zero test (a subnormal left as it was). Not run: `x11_expose` (no Xvfb on
 this machine), the Mac and Windows, and a graphical check of change 13 under Hyprland.
+
+## K-CA74-LATE-0.3. Shared release fixes for Highstead
+
+User authorized all late CA-72 0.3.0 fixes on 2026-10-28. This candidate combines
+K-X11-REPEAT (PR12, 91faf69), the pending K-CA72-0.3 sizing and FTZ helper (6db2e80),
+and nih-plug change24, the production closing hook from CA-72 5fbc5da.
+Based on merged main696328b, retaining plugin-kit-agent without requiring its adoption.
+Implementation source conflicts were absent; documentation and CI retain both histories.
+The owner merges main; instruments move production pins only after that merge.
+
+Validation on Linux: workspace 142 passed, zero failed, three ignored (including doc tests); wrapper
+production/visibility/note-expression/FTZ cases 11 passed; baseview 13 passed, four ignored.
+Workspace all-target Clippy denies warnings and passes. The first combined compile caught
+and removed a duplicate top_level field introduced by combining changes13 and14.
+No local Xvfb is installed, so real-server checks remain in CI's virtual display.

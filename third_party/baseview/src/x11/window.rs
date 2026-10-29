@@ -105,7 +105,6 @@ pub(crate) struct WindowInner {
 
     pub(crate) close_requested: Cell<bool>,
     /// A window of its own (no parent), whose size the window manager is told (`resize`).
-    top_level: bool,
 
     #[cfg(feature = "opengl")]
     gl_context: Option<GlContext>,
@@ -297,7 +296,6 @@ impl<'a> Window<'a> {
             top_level: parent.is_none(),
 
             close_requested: Cell::new(false),
-            top_level: parent.is_none(),
 
             #[cfg(feature = "opengl")]
             gl_context,

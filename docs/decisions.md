@@ -781,3 +781,33 @@ macOS 15, Windows 2025 and Ubuntu 22.04
 with them: on macOS `backing_scale` and `mac_quit`'s three (⌘Q, the menus, the quit Apple
 event); on Windows baseview's 10 window tests; on Linux `x11_expose` under Xvfb; nih-plug's 9 on
 each; the occlusion test on Linux and macOS.
+
+## K-AGENT. Agents operate a standalone instrument through MCP (`plugin-kit-agent`)
+
+**Agent decision, 2026-10-28** (the owner asked for the CA-72's agent support in Malleator and
+for its shared part to live in the kit; not separately reviewed). The CA-72's agent transport
+(its R-MCP: `crates/ca72-plugin/src/agent/` bridge, mcp, server, discovery, awake, setup) knew
+nothing of the circuit but was written inside the CA-72. Malleator's R40 rebuilt it as an
+instrument-independent crate and it moves here unchanged but for its manifest, which now takes
+the workspace's version, edition, licence and shared dependencies.
+
+- An instrument supplies `Config`: its identity, version, instructions and a table of `Tool`s.
+  Its bridge binary runs `Bridge::at` then `mcp::serve` over stdio; its standalone's editor
+  starts `Server::start_in` only after the player allows agents, drains at most 32 `Job`s a
+  frame and answers them on the window thread. The plug-in in a host never listens.
+- MCP revisions 2025-11-25, 2025-06-18, 2025-03-26 and 2024-11-05; newline-delimited JSON-RPC;
+  input bounded to 1 MiB; eight connections; a request not taken in ten seconds is cancelled.
+  Sockets live in a private (0700) per-user folder, each 0600; Windows uses AF_UNIX in the
+  user's temporary folder. No TCP listener.
+- The CA-72 keeps its own copy until it moves onto this crate, one change at a time, as the
+  kit's other crates were taken.
+
+**Evidence (Linux, 2026-10-28, rustc 1.97.1):** `cargo clippy -p plugin-kit-agent --all-targets
+-- -D warnings` clean; `cargo test -p plugin-kit-agent` 15 passed; `cargo fmt --all -- --check`
+clean. Malleator's R40 ran the whole flow on Linux through its packaged application (initialize,
+13 tools, a chord played and listened to, consent saved, clean shutdown) under nih-plug's
+allocation guard. Not built here on macOS or Windows.
+
+**Owner decision, 2026-10-28.** Shown Malleator's R40 at work and its tools for presets and
+modulation (23 in all, through this crate unchanged), the owner said yes to merging this branch
+into main and to the CA-72 moving onto the crate.

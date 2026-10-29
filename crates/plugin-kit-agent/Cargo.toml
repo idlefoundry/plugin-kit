@@ -1,0 +1,25 @@
+[package]
+name = "plugin-kit-agent"
+description = "Agents operate an instrument's standalone application through MCP: a local socket, a stdio bridge and the window thread's inbox"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+uds_windows = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.24"
+objc = "0.2"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

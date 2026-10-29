@@ -319,6 +319,13 @@ fn listen(
     while !stop.load(Ordering::Acquire) {
         match listener.accept() {
             Ok((mut stream, _)) => {
+                // Bound BUSY on the listener too, before any thread can write.
+                if stream
+                    .set_write_timeout(Some(Duration::from_millis(200)))
+                    .is_err()
+                {
+                    continue;
+                }
                 let mut i = 0;
                 while i < threads.len() {
                     if threads[i].is_finished() {
@@ -566,6 +573,7 @@ fn request(
 mod tests {
     use super::*;
     use crate::Stream;
+    use std::io::Read;
     use std::io::{BufRead, BufReader, Write};
 
     fn server() -> (tempfile::TempDir, Server) {
@@ -773,5 +781,46 @@ mod tests {
         assert!(
             Server::start_in(t.path(), "standalone", "../outside", crate::test_config()).is_err()
         );
+    }
+    /// A bridge that stops reading a large answer must not hold the editor open on quit.
+    #[test]
+    fn stopping_does_not_wait_for_a_client_to_read_its_answer() {
+        let (_t, s) = server();
+        let (mut c, _r) = connect(&s);
+        c.set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("read timeout");
+        c.set_write_timeout(Some(Duration::from_secs(5)))
+            .expect("write timeout");
+        let id = "x".repeat(700 * 1024);
+        let ping = json!({"jsonrpc": "2.0", "id": id, "method": "ping"});
+        writeln!(c, "{ping}").expect("ping");
+        // The answer has started. Leave the remaining bytes unread and the peer open.
+        c.read_exact(&mut [0u8; 1]).expect("answer starts");
+        let (done, result) = sync_channel(1);
+        let shutdown = std::thread::spawn(move || {
+            drop(s);
+            let _ = done.send(());
+        });
+        let stopped = result.recv_timeout(Duration::from_secs(2)).is_ok();
+        // Also release a broken implementation before asserting, so the test cannot hang.
+        let _ = c.shutdown(std::net::Shutdown::Both);
+        shutdown.join().expect("shutdown thread");
+        assert!(stopped, "shutdown waited for a client that was not reading");
+    }
+
+    #[test]
+    fn a_client_reading_a_large_answer_receives_it_whole() {
+        let (_t, s) = server();
+        let (mut c, mut r) = connect(&s);
+        c.set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("read timeout");
+        c.set_write_timeout(Some(Duration::from_secs(5)))
+            .expect("write timeout");
+        let id = "x".repeat(700 * 1024);
+        let ping = json!({"jsonrpc": "2.0", "id": id, "method": "ping"});
+        writeln!(c, "{ping}").expect("ping");
+        let answer = line(&mut r);
+        assert_eq!(answer["id"], ping["id"]);
+        assert_eq!(answer["result"], json!({}));
     }
 }

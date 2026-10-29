@@ -1,7 +1,7 @@
 //! Local MCP transport for instruments. The application owns a [`server::Server`] and
 //! drains its inbox on the window thread. A separate binary runs [`mcp::serve`] with a
 //! [`bridge::Bridge`]. No audio-thread code belongs here. Adapted from CA-72 (GPL-3.0-or-later).
-mod awake;
+pub mod awake;
 pub mod bridge;
 pub mod discovery;
 pub mod mcp;

@@ -811,3 +811,17 @@ allocation guard. Not built here on macOS or Windows.
 **Owner decision, 2026-10-28.** Shown Malleator's R40 at work and its tools for presets and
 modulation (23 in all, through this crate unchanged), the owner said yes to merging this branch
 into main and to the CA-72 moving onto the crate.
+
+## K-X11-FRAME-SLEEP. The X11 event loop sleeps until its frame (baseview change 15)
+
+**Agent decision, 2026-10-29** (the owner asked Malleator for performance across the board;
+not separately reviewed). baseview's X11 loop truncated its wait for the next frame to whole
+milliseconds and spun through the last part of each one: about 6.7 % of a core for every open
+editor on Linux. Rounded up instead (`third_party/baseview/PATCHES.md` 15). The frame interval
+and the pacing are unchanged; a frame can come up to 1 ms later. Numbered 15 so that the branch
+made for Malleator's pin (from `696328b`, which has changes 1 to 12) and main (1 to 14) agree.
+
+**Evidence (Linux, 2026-10-29):** Malleator's `scripts/hosts/editor-idle-linux.py` on its
+packaged application, with this line in a `[patch]` copy of baseview: idle CPU with the window
+open fell 16.8 % → 4.9 % of a core with audio, 13.1 % → 0.7 % with no devices; the editor's
+frames unchanged. Not measured on macOS or Windows, whose loops pace with their own timers.

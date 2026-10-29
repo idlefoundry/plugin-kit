@@ -107,8 +107,10 @@ impl EventLoop {
             self.drain_xcb_events()?;
 
             // FIXME: handle errors
-            poll(&mut fds, next_frame.duration_since(Instant::now()).subsec_millis() as i32)
-                .unwrap();
+            // Rounded up to a whole millisecond (change 15): truncated, the last part of a
+            // millisecond before each frame was 0, and the loop went round without sleeping.
+            let wait = next_frame.duration_since(Instant::now());
+            poll(&mut fds, wait.as_micros().div_ceil(1000).min(i32::MAX as u128) as i32).unwrap();
 
             if let Some(revents) = fds[0].revents() {
                 if revents.contains(PollFlags::POLLERR) {

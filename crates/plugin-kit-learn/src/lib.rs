@@ -640,6 +640,12 @@ impl<P: Param> Target for P {
 
 /// The plug-in's parameters as MIDI Learn finds them, by their index in its list.
 pub trait LearnTargets {
+    /// A control handled by the application rather than a host parameter (for example an
+    /// effect pin). It must have neither a host target nor a smoothing knob. Existing
+    /// implementations keep requiring a parameter for every entry.
+    fn external_kind(&self, _i: usize) -> Option<Kind> {
+        None
+    }
     /// The learnable parameter of index `i`.
     fn target(&self, i: usize) -> Option<&dyn Target>;
     /// The knob of index `i`, if it is one (the ones [`Dezip`] glides): every
@@ -661,6 +667,15 @@ pub fn check<const N: usize>(list: &[Learnable; N], p: &impl LearnTargets) -> Re
         return Err(format!("{} listed twice", w[0]));
     }
     for (i, l) in list.iter().enumerate() {
+        if let Some(kind) = p.external_kind(i) {
+            if kind != l.kind || p.target(i).is_some() || p.knob(i).is_some() {
+                return Err(format!(
+                    "{}: external control disagrees with its declaration",
+                    l.id
+                ));
+            }
+            continue;
+        }
         let t = p
             .target(i)
             .ok_or_else(|| format!("{}: no parameter", l.id))?;

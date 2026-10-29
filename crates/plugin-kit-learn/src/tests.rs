@@ -189,6 +189,41 @@ fn a_list_is_checked_against_its_parameters() {
     assert!(check(&LIST, &Lacking(&p)).is_err_and(|e| e.contains("tune: no parameter")));
 }
 
+/// External controls must be declared, agree in kind and never masquerade as a host parameter.
+#[test]
+fn external_controls_are_explicit_and_cannot_hide_missing_host_parameters() {
+    struct External {
+        kind: Option<Kind>,
+        host: bool,
+        params: TestParams,
+    }
+    impl LearnTargets for External {
+        fn external_kind(&self, _: usize) -> Option<Kind> {
+            self.kind
+        }
+        fn target(&self, _: usize) -> Option<&dyn Target> {
+            self.host.then(|| self.params.target(0)).flatten()
+        }
+        fn knob(&self, _: usize) -> Option<&FloatParam> {
+            None
+        }
+    }
+    let list = [knob("fx1", "EFFECT PIN 1")];
+    let mut p = External {
+        kind: None,
+        host: false,
+        params: TestParams::default(),
+    };
+    assert!(check(&list, &p).is_err_and(|e| e.contains("no parameter")));
+    p.kind = Some(Kind::Continuous);
+    assert_eq!(check(&list, &p), Ok(()));
+    p.kind = Some(Kind::Switch);
+    assert!(check(&list, &p).is_err());
+    p.kind = Some(Kind::Continuous);
+    p.host = true;
+    assert!(check(&list, &p).is_err());
+}
+
 /// Bank select, the modulation wheel, data entry and RPN/NRPN, and the channel mode messages
 /// are not learned; every other control change is.
 #[test]

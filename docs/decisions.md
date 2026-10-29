@@ -811,3 +811,27 @@ allocation guard. Not built here on macOS or Windows.
 **Owner decision, 2026-10-28.** Shown Malleator's R40 at work and its tools for presets and
 modulation (23 in all, through this crate unchanged), the owner said yes to merging this branch
 into main and to the CA-72 moving onto the crate.
+
+**Agent decision, 2026-10-28 (not separately approved).** T12 compares the CA-72's
+release-0.3.0 agent layer at ca1ea9b with this crate before adopting it. Windows AF_UNIX
+(4013a1b), user-initiated App Nap protection (b2329ab), latency-critical agent activity
+(7c5b650), protocol revisions, socket namespace parameterisation, timeouts and framing
+are already present. Port ca1ea9b's checked write timeout immediately on accept, including
+the listener's BUSY answer; retain the kit's existing connection write timeout and worker
+joining. Port R-QUIT-NAP's once-per-process user-initiated quitting activity, without the
+latency-critical flag; expose awake::quitting for an application to call as its window
+closes. No consent or lifecycle policy is imposed on applications. Add defaulted Backend
+hooks for product initialize metadata, tool annotations and prompt requests, preserving
+CA-72's reference-fitting prompt and destructive hints without adding product fields to
+Config or Tool. Existing Malleator callers need no change; image results were already
+supported.
+
+**Evidence:** Linux, Rust 1.97.1: cargo test -p plugin-kit-agent, 19 passed;
+cargo clippy -p plugin-kit-agent --all-targets -- -D warnings and cargo fmt --all --
+--check clean. stopping_does_not_wait_for_a_client_to_read_its_answer and
+a_client_reading_a_large_answer_receives_it_whole port the release regressions.
+activity_policy_allows_sleep_and_only_agents_need_latency_critical checks both activity
+masks and repeated quitting calls; product_extensions_preserve_metadata_prompts_and_errors
+covers the additive hooks and notification suppression. Existing discovery, protocol,
+selection, cancellation, deferred-job shutdown and framing tests remain green. macOS
+Foundation execution and Windows AF_UNIX execution are not available on this Linux machine.

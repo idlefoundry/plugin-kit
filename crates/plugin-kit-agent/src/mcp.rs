@@ -21,6 +21,18 @@ pub const MAX_LINE: usize = 1 << 20;
 /// What carries out a tool's call.
 pub trait Backend {
     fn call(&mut self, tool: &Tool, args: &Value) -> Reply;
+    /// Product additions to initialize, such as a title and prompt capability.
+    fn initialize(&mut self, result: Value) -> Value {
+        result
+    }
+    /// Product annotations for a tool, with the standard schema as default.
+    fn tool_json(&self, tool: &Tool) -> Value {
+        tool.json()
+    }
+    /// Product-owned prompt requests. Called only for requests with an id.
+    fn request(&mut self, _method: &str, _args: &Value) -> Option<Reply> {
+        None
+    }
     /// The client's name, as `initialize` gives it.
     fn client(&mut self, _name: &str) {}
 }
@@ -106,6 +118,12 @@ pub fn handle(backend: &mut dyn Backend, config: &Config, msg: &Value) -> Option
     let args = obj.get("params").cloned().unwrap_or(json!({}));
     // Notifications (no id) get no answer: `notifications/initialized`, `/cancelled`.
     let id = id?;
+    if let Some(result) = backend.request(method, &args) {
+        return Some(match result {
+            Ok(value) => reply(id, value),
+            Err(e) => json!({"jsonrpc":"2.0","id":id,"error":e.to_json()}),
+        });
+    }
     Some(match method {
         "initialize" => {
             let asked = args.get("protocolVersion").and_then(Value::as_str);
@@ -117,18 +135,18 @@ pub fn handle(backend: &mut dyn Backend, config: &Config, msg: &Value) -> Option
             }
             reply(
                 id,
-                json!({
+                backend.initialize(json!({
                     "protocolVersion": version,
                     "capabilities": {"tools": {"listChanged": false}},
                     "serverInfo": {"name": config.name, "version": config.version},
                     "instructions": config.instructions,
-                }),
+                })),
             )
         }
         "ping" => reply(id, json!({})),
         "tools/list" => reply(
             id,
-            json!({"tools": config.tools.iter().map(Tool::json).collect::<Vec<_>>()}),
+            json!({"tools": config.tools.iter().map(|tool| backend.tool_json(tool)).collect::<Vec<_>>()}),
         ),
         "tools/call" => {
             let name = args.get("name").and_then(Value::as_str).unwrap_or("");
@@ -328,5 +346,58 @@ mod tests {
         assert_eq!(r.len(), 2);
         assert_eq!(r[0]["error"]["code"], json!(codes::INVALID_REQUEST));
         assert_eq!(r[1]["id"], json!(2));
+    }
+}
+
+#[cfg(test)]
+mod extension_tests {
+    use super::*;
+    struct Product;
+    impl Backend for Product {
+        fn call(&mut self, _: &Tool, _: &Value) -> Reply {
+            Ok(json!({}))
+        }
+        fn initialize(&mut self, mut value: Value) -> Value {
+            value["serverInfo"]["title"] = json!("Product");
+            value["capabilities"]["prompts"] = json!({"listChanged":false});
+            value
+        }
+        fn tool_json(&self, tool: &Tool) -> Value {
+            let mut value = tool.json();
+            value["annotations"]["destructiveHint"] = json!(true);
+            value
+        }
+        fn request(&mut self, method: &str, _: &Value) -> Option<Reply> {
+            match method {
+                "prompts/list" => Some(Ok(json!({"prompts":[{"name":"fit"}]}))),
+                "prompts/get" => Some(Err(ApiError::params("missing reference"))),
+                _ => None,
+            }
+        }
+    }
+    #[test]
+    fn product_extensions_preserve_metadata_prompts_and_errors() {
+        let c = crate::test_config();
+        let mut p = Product;
+        let ask = |p: &mut Product, method| {
+            handle(p, &c, &json!({"jsonrpc":"2.0","id":1,"method":method})).unwrap()
+        };
+        assert_eq!(
+            ask(&mut p, "initialize")["result"]["serverInfo"]["title"],
+            "Product"
+        );
+        assert_eq!(
+            ask(&mut p, "tools/list")["result"]["tools"][0]["annotations"]["destructiveHint"],
+            true
+        );
+        assert_eq!(
+            ask(&mut p, "prompts/list")["result"]["prompts"][0]["name"],
+            "fit"
+        );
+        assert_eq!(
+            ask(&mut p, "prompts/get")["error"]["code"],
+            codes::INVALID_PARAMS
+        );
+        assert!(handle(&mut p, &c, &json!({"jsonrpc":"2.0","method":"prompts/get"})).is_none());
     }
 }

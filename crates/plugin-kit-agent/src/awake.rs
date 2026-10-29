@@ -23,7 +23,7 @@ impl Awake {
     pub fn begin() -> Awake {
         Awake {
             #[cfg(target_os = "macos")]
-            _token: mac::Token::begin("Answering AI agents (SETTINGS > AGENTS)", mac::AGENTS),
+            _token: mac::Token::begin("Answering AI agents (agents allowed)", mac::AGENTS),
         }
     }
 }

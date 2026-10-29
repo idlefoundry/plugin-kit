@@ -942,3 +942,12 @@ production/visibility/note-expression/FTZ cases 11 passed; baseview 13 passed, f
 Workspace all-target Clippy denies warnings and passes. The first combined compile caught
 and removed a duplicate top_level field introduced by combining changes13 and14.
 No local Xvfb is installed, so real-server checks remain in CI's virtual display.
+
+## K-EXTERNAL-LEARN. Explicit application controls in MIDI Learn
+
+CA74's effects pins are continuous controls with no host parameter or synth smoother.
+LearnTargets::external_kind opts an entry into application dispatch. The checker still
+requires every undeclared entry to resolve, and rejects external entries with a host target,
+a smoother or a mismatched kind. The new regression fails without external checking; the
+16 learn tests and package/all-target Clippy pass. Existing consumers retain the default
+parameter-only behavior.

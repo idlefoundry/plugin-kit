@@ -807,3 +807,7 @@ the workspace's version, edition, licence and shared dependencies.
 clean. Malleator's R40 ran the whole flow on Linux through its packaged application (initialize,
 13 tools, a chord played and listened to, consent saved, clean shutdown) under nih-plug's
 allocation guard. Not built here on macOS or Windows.
+
+**Owner decision, 2026-10-28.** Shown Malleator's R40 at work and its tools for presets and
+modulation (23 in all, through this crate unchanged), the owner said yes to merging this branch
+into main and to the CA-72 moving onto the crate.

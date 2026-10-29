@@ -99,8 +99,12 @@ pub(crate) struct WindowInner {
     pub(crate) window_info: WindowInfo,
     visual_id: Visualid,
     mouse_cursor: Cell<MouseCursor>,
+    /// A window of its own (no parent), whose handler is told of the keyboard's focus (PATCHES.md,
+    /// change 14).
+    pub(crate) top_level: bool,
 
     pub(crate) close_requested: Cell<bool>,
+    /// A window of its own (no parent), whose size the window manager is told (`resize`).
 
     #[cfg(feature = "opengl")]
     gl_context: Option<GlContext>,
@@ -224,6 +228,8 @@ impl<'a> Window<'a> {
                         | EventMask::BUTTON_RELEASE
                         | EventMask::KEY_PRESS
                         | EventMask::KEY_RELEASE
+                        // The keys' focus, for their repeats (PATCHES.md, change 14).
+                        | EventMask::FOCUS_CHANGE
                         | EventMask::STRUCTURE_NOTIFY
                         | EventMask::ENTER_WINDOW
                         | EventMask::LEAVE_WINDOW,
@@ -240,6 +246,17 @@ impl<'a> Window<'a> {
             AtomEnum::ATOM,
             &[xcb_connection.atoms.WM_DELETE_WINDOW],
         )?;
+
+        // A window of its own is the size its handler gives it, and no other (PATCHES.md, change
+        // 13). A parented window's size is its host's affair.
+        if parent.is_none() {
+            crate::x11_window_identity::set_fixed_size(
+                &xcb_connection.conn,
+                window_id,
+                window_info.physical_size().width,
+                window_info.physical_size().height,
+            )?;
+        }
 
         crate::x11_window_identity::set_identity_and_map(
             &xcb_connection.conn,
@@ -276,6 +293,7 @@ impl<'a> Window<'a> {
             window_info,
             visual_id: visual_info.visual_id,
             mouse_cursor: Cell::new(MouseCursor::default()),
+            top_level: parent.is_none(),
 
             close_requested: Cell::new(false),
 
@@ -331,6 +349,16 @@ impl<'a> Window<'a> {
     pub fn resize(&mut self, size: Size) {
         let scaling = self.inner.window_info.scale();
         let new_window_info = WindowInfo::from_logical_size(size, scaling);
+
+        // The window manager holds a window of its own to the size it was last told (change 13).
+        if self.inner.top_level {
+            let _ = crate::x11_window_identity::set_fixed_size(
+                &self.inner.xcb_connection.conn,
+                self.inner.window_id,
+                new_window_info.physical_size().width,
+                new_window_info.physical_size().height,
+            );
+        }
 
         let _ = self.inner.xcb_connection.conn.configure_window(
             self.inner.window_id,

@@ -13,9 +13,9 @@ today's rustfmt gives it, so that `cargo fmt --all` leaves the tree as it is.
 
 Six changes for Windows (1 to 3, 5, 6 and 9), in `src/win/window.rs`, `src/win/drop_target.rs`,
 `src/win/escape.rs`, `src/event.rs` and `src/window.rs` (the first three the CA-72's
-`docs/decisions.md` R26, R28 and R34), four for macOS (4, 7, 8 and 11) and two for Linux (10 and
-12, below). Changes 8 to 12 are the CA-72's, numbered as it numbers them (`docs/decisions.md`
-K-CA72-0.2.8); their tests are here, run as each says, and the kit's CI runs them.
+`docs/decisions.md` R26, R28 and R34), four for macOS (4, 7, 8 and 11) and four for Linux (10,
+12, 13 and 14, below). Changes 8 to 14 keep the CA-72's numbering. Their tests are
+here, and the kit's CI runs them.
 
 1. **The window procedure never calls the handler while it is busy.** baseview keeps the
    window's handler in a `RefCell` and borrows it for each event. A message can be sent to
@@ -261,6 +261,81 @@ R-LINUX-RESIZE, its issue #65, 2026-10-20):
    window of its own three times and waits for `Damaged` at its new size; with the `Expose` arm
    taken out it times out. The CA-72's test of its editor's panel
    (`a_panel_grown_is_shown_again_as_x_asks`) stays with it.
+
+And one more for Linux, in `src/x11/window.rs` and `src/x11/window_identity.rs` (the CA-72's
+`db7e20a`, 2026-10-27):
+
+13. **On X11, a window of its own tells the window manager its size.** The window had no
+   `WM_NORMAL_HINTS`, so a tiling window manager sized it as it liked. On Omarchy (Hyprland
+   with XWayland, a 2560 × 1600 screen at 1.6) the CA-72's standalone was tiled to 2522 × 1520
+   pixels around an editor of 2048 × 1170: the panel in the top left corner, black to the right
+   and below. Floated by hand, it took a size Hyprland chose, 1251 × 1520, cutting the panel
+   off on the right. nih-plug's standalone does not refit its editor to a size it did not ask
+   for on Linux (`refits`, so as not to fight the window manager), and the editor cannot
+   follow such a size. Now a window with no parent gets, before it is mapped, its size as
+   both its least and its greatest (`PMinSize | PMaxSize`), and again before each
+   `Window::resize` it asks for. Hyprland floats an XWayland window whose least and greatest
+   sizes are equal: the same standalone opened floating at 1281 × 732 logical pixels (2050 ×
+   1171), the panel filling it. A parented window (a plug-in's editor in a host) is
+   unchanged. Tests `a_window_of_its_own_is_held_to_its_size` and
+   `a_size_of_nothing_is_held_to_a_pixel` (`src/x11/window_identity/tests.rs`) check the
+   request; a resize under Hyprland (the drawer, PANEL, the grip) still needs a graphical check.
+
+And one more for Linux, in `src/x11/key_repeat.rs`, `src/x11/event_loop.rs`,
+`src/x11/xcb_connection.rs`, `src/x11/window.rs` and `src/window.rs` (`docs/decisions.md`
+K-X11-REPEAT, 2026-10-28):
+
+14. **On X11, a held key is one press, its repeats presses marked `repeat`, and one release.** The
+   X server repeats a held key itself (after its delay, some 25 or 40 times a second) and by
+   default sends each repeat as a release and a press; baseview marked no X11 key event as a
+   repeat (`repeat: false` in `src/x11/keyboard.rs`). So a handler was told the key was let go
+   and struck again with each: Malleator's and the CA-72's typed notes were let go and struck
+   again while held, and their Z and X stepped through the octaves (Malleator's
+   `docs/decisions.md` R35, which first worked round it with a grace period in the plug-in).
+   macOS (`isARepeat`) and Windows (`WM_KEYDOWN`'s previous-state bit, with no `WM_KEYUP`
+   between repeats) were already right. Now:
+   - each window's connection asks for XKB's detectable auto-repeat
+     (`XkbSetDetectableAutoRepeat`, a per-client flag: the host's own connections are not
+     touched), and keeps whether the server granted it (both the flag's answer and its
+     `supported` mask); the server then sends a held key's repeats as presses alone, and its
+     release once it is let go. `Window::key_repeats_detectable()` says whether it did (always
+     true on Windows and macOS);
+   - the event loop keeps the keys down (`KeyRepeats`, by keycode), and a press of a key
+     already down reaches the handler marked `repeat: true`;
+   - where the server has no detectable auto-repeat (no XKB, or the flag refused), each event is
+     read with the one after it, if it has come: a release followed by a press of the same key
+     in the same window at the same server time (the server's pair, sent together, which a hand
+     cannot make in the same millisecond) is a repeat: the release is dropped, and the press,
+     the key still down, is marked `repeat`. This runs whether or not the flag was granted;
+     with it, the server sends no such pairs;
+   - the keys down are forgotten whenever a release may go elsewhere: at every `FocusIn` and
+     `FocusOut` (the window now selects `FOCUS_CHANGE`), and, for a parented window, which has
+     the keys only while the pointer is in it, at `LeaveNotify`. A key let go meanwhile is
+     struck afresh, not taken for a repeat; a key still held then gives one press unmarked;
+   - a window of its own (no parent) tells its handler `WindowEvent::Focused` and `Unfocused`,
+     as on Windows and macOS, so that a handler can let its notes go as the focus leaves (the
+     key's release then goes to another window). Not for a grab's passing focus (`NotifyGrab`,
+     `NotifyUngrab`: a window manager's shortcut, a window dragged), nor for the focus moving
+     within the window or following the pointer (`Inferior`, `Pointer`, `PointerRoot`, `None`).
+     A parented window's handler is told nothing new; its host has the focus.
+
+   A key let go and struck again by hand, however quickly, is struck again: its press comes at
+   a later time, or after its release has been handled. A real release reaches the handler at
+   once; nothing waits.
+
+   `src/x11/key_repeat/tests.rs` (every system): 30 release-and-press pairs at one time are 30
+   repeats and no release; detectable auto-repeat's presses alone the same; a quick press again
+   is a press; another key's press at the same time leaves a release as it is; a key forgotten is
+   struck afresh. `tests/x11_key_repeat.rs` (Linux, ignored: an X server with its auto-repeat on;
+   `-- --ignored --test-threads=1`) holds A for 1.6 s with XTEST, as `xdotool keydown` does:
+   `a_held_key_is_one_press_and_its_repeats` (off the screen, the keyboard grabbed for its own
+   window, so it needs no focus and runs under XWayland), the same with detectable auto-repeat
+   turned off again on baseview's own connection (the fallback, on a real server), and
+   `losing_the_focus_forgets_the_keys_down` (a window of its own given the focus, taken away and
+   given back while A is held: Xvfb, no window manager). On Xvfb and on XWayland (Hyprland,
+   Omarchy 4.0.6): 1 press, 24 repeats and 1 release where before there were 25 releases and 25
+   presses, each unmarked; with the event loop's pairing taken out, the first still passes (the
+   flag alone) and the second fails (25 pairs again).
 
 Upstream's master has since rewritten the Windows backend and the handler's interface; to
 move to it, the editor must be ported, and the tests above show whether it still needs this.

@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use baseview::{Event, EventStatus, Window, WindowHandler};
+use baseview::{Event, EventStatus, Window, WindowEvent, WindowHandler};
 use crossbeam::queue::ArrayQueue;
 use plugin_kit_standalone::{
     AppHandle, AppOptions, AudioBlock, AudioProcessor, MidiResetScope, ProcessConfig, SessionState,
@@ -610,6 +610,7 @@ impl<P: Plugin> WindowHandler for AppWindow<P> {
         // Quitting, as the editor asked (`app_window::request_quit`): the window closed as its
         // close button closes it, and the app shut down as then, once `open_blocking` returns.
         if app_window::quit_requested() {
+            app_window::closing();
             window.close();
             return;
         }
@@ -670,15 +671,29 @@ impl<P: Plugin> WindowHandler for AppWindow<P> {
         if app_window::refits(&event) {
             self.session.resize.store(true, Ordering::Release);
         }
+        // Closing, at its close button or a way of quitting that closes it (on macOS ⌘Q and the
+        // quit Apple event, baseview's change 11): the app has begun to quit.
+        if matches!(event, Event::Window(WindowEvent::WillClose)) {
+            app_window::closing();
+        }
         // (The window's own keys, where the editor's has not the keyboard: on X11, with the
         // pointer outside the editor's.)
         if let Event::Keyboard(key) = &event {
             if app_window::quits(key) {
+                app_window::closing();
                 window.close();
                 return EventStatus::Captured;
             }
         }
         EventStatus::Ignored
+    }
+}
+
+/// The window gone, however it was closed: the app is quitting (`app_window::on_closing`, if
+/// nothing called it as the window began to close).
+impl<P: Plugin> Drop for AppWindow<P> {
+    fn drop(&mut self) {
+        app_window::closing();
     }
 }
 
@@ -842,6 +857,8 @@ pub mod app_window {
     use crate::editor::Editor;
 
     static QUIT: AtomicBool = AtomicBool::new(false);
+    static CLOSING: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
+    static CLOSED: AtomicBool = AtomicBool::new(false);
 
     /// Whether `key` is this system's shortcut for quitting an application, where the app's
     /// windows are to act on it: Ctrl+Q on Linux (none on macOS, whose ⌘Q is the main menu's,
@@ -870,6 +887,23 @@ pub mod app_window {
     /// Whether quitting has been asked for since this was last asked (once).
     pub fn quit_requested() -> bool {
         QUIT.swap(false, Ordering::AcqRel)
+    }
+
+    /// Have `closing` called once, as the app's window starts to close, however it is closed
+    /// (its close button, every way of quitting): the app has begun to quit, before its editor
+    /// is dropped, `open_blocking` returns and the session is saved. A second is ignored. (The
+    /// CA-72 lifts macOS's App Nap there: its `docs/decisions.md` R-QUIT-NAP.)
+    pub fn on_closing(closing: fn()) {
+        let _ = CLOSING.set(closing);
+    }
+
+    /// The window is closing: [`on_closing`]'s function called, the first time only.
+    pub(super) fn closing() {
+        if !CLOSED.swap(true, Ordering::AcqRel) {
+            if let Some(closing) = CLOSING.get() {
+                closing();
+            }
+        }
     }
 
     /// The scale the window opens at (the primary monitor's, where baseview opens it), the
@@ -931,3 +965,24 @@ pub mod app_window {
 #[cfg(test)]
 #[path = "production_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod closing_tests {
+    use super::app_window;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static CALLED: AtomicUsize = AtomicUsize::new(0);
+    fn first() {
+        CALLED.fetch_add(1, Ordering::SeqCst);
+    }
+    fn ignored() {
+        panic!("a second registration replaced the first");
+    }
+    #[test]
+    fn closing_calls_the_first_registered_hook_exactly_once() {
+        app_window::on_closing(first);
+        app_window::on_closing(ignored);
+        app_window::closing();
+        app_window::closing();
+        assert_eq!(CALLED.load(Ordering::SeqCst), 1);
+    }
+}

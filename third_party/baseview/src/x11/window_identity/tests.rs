@@ -1,4 +1,4 @@
-use super::{set_identity_and_map, top_level_class};
+use super::{set_fixed_size, set_identity_and_map, top_level_class};
 use std::cell::RefCell;
 use std::convert::TryInto;
 use std::io::IoSlice;
@@ -170,4 +170,37 @@ fn failed_identity_requests_prevent_mapping() {
         assert!(set_identity_and_map(&conn, 42, "Instrument", Some("Instrument")).is_err());
         assert!(conn.requests.borrow().iter().all(|request| request[0] != MAP_WINDOW_REQUEST));
     }
+}
+
+#[test]
+fn a_window_of_its_own_is_held_to_its_size() {
+    let conn = RecordingConnection::default();
+    set_fixed_size(&conn, 42, 2048, 1170).unwrap();
+    let requests = conn.requests.borrow();
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(request[0], CHANGE_PROPERTY_REQUEST);
+    assert_eq!(request[1], 0, "replace the property");
+    assert_eq!(word(request, 4), 42, "the correct window");
+    assert_eq!(word(request, 8), u32::from(AtomEnum::WM_NORMAL_HINTS));
+    assert_eq!(word(request, 12), u32::from(AtomEnum::WM_SIZE_HINTS));
+    assert_eq!(request[16], 32, "ICCCM WM_SIZE_HINTS/32");
+    assert_eq!(word(request, 20), 18, "eighteen fields");
+    let field = |i: usize| word(request, 24 + 4 * i);
+    assert_eq!(field(0), (1 << 4) | (1 << 5), "PMinSize and PMaxSize only");
+    assert_eq!((field(5), field(6)), (2048, 1170), "least");
+    assert_eq!(
+        (field(7), field(8)),
+        (2048, 1170),
+        "greatest, the same: a tiling manager floats it"
+    );
+    assert!((9..18).all(|i| field(i) == 0));
+}
+
+#[test]
+fn a_size_of_nothing_is_held_to_a_pixel() {
+    let conn = RecordingConnection::default();
+    set_fixed_size(&conn, 42, 0, 0).unwrap();
+    let request = &conn.requests.borrow()[0];
+    assert_eq!((word(request, 44), word(request, 48)), (1, 1));
 }

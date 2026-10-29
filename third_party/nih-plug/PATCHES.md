@@ -282,6 +282,23 @@ a number of their own there (`docs/decisions.md` K-CA72-0.2.8):
     `a_request_to_quit_is_seen_once`. The CA-72's tests that its editor hands Ctrl+Q over
     before typing has it stay with it.
 
+23. **Offline work runs in the live wrappers' floating point mode** (the CA-72's "Detached
+    offline rendering", its R-REFERENCE-AUDIO, 2026-10-21). `util::with_flush_to_zero` runs a
+    closure under the wrappers' own scoped flush-to-zero guard (`wrapper::util::ScopedFtz`,
+    which `process_wrapper` takes), restoring the calling thread's mode afterwards, so that a
+    plug-in's render made with no host (an agent's, a test's) gives the samples a host's
+    `process` call would. It leaves out `process_wrapper`'s `assert_no_alloc`: an offline
+    renderer allocates its output. The live wrappers' processing is unchanged. `src/util.rs`:
+    `offline_work_is_flushed_to_zero_and_the_threads_mode_put_back` (a subnormal result flushed
+    inside, nested too, and the thread's mode as it was outside).
+
 To move to a newer upstream commit, copy its `Cargo.toml`, `LICENSE`, `README.md`, `src`
-and `nih_plug_derive` here and apply the twenty-two changes again, unless upstream has fixed them.
+and `nih_plug_derive` here and apply the twenty-three changes again, unless upstream has fixed them.
 Then update the commit above, and `nih_plug_xtask`'s `rev` in each plug-in's workspace `Cargo.toml`.
+
+24. **An application can act as its window begins to close.** The production standalone
+    exposes `app_window::on_closing(fn())`, called once before closing from a quit request,
+    shortcut or WillClose, with Drop as fallback. The first callback registration wins.
+    This ports CA-72 commit 5fbc5da (R-QUIT-NAP): an instrument uses it to lift macOS App Nap
+    while it saves and shuts down. The framework itself makes no App Nap request.
+    `closing_calls_the_first_registered_hook_exactly_once` covers registration and repetition.

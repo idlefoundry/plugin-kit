@@ -337,6 +337,16 @@ K-X11-REPEAT, 2026-10-28):
    presses, each unmarked; with the event loop's pairing taken out, the first still passes (the
    flag alone) and the second fails (25 pairs again).
 
+15. **On X11, the event loop sleeps until the frame, not a millisecond short of it.** Its `poll`
+   timeout was the wait's `subsec_millis()`: truncated, so in the last part of a millisecond
+   before each frame it was 0, and the loop went round without sleeping, about 1 ms of every
+   15 ms frame (6.7 % of a core a loop). It is now rounded up to the next whole millisecond. A
+   frame can be up to 1 ms later than it was, and the loop's pacing (`last_frame` kept to the
+   schedule) keeps frames every 15 ms on average, as before. Malleator's R46 part 2 found it:
+   its application at idle with the window open fell from 16.8 % of a core to 4.9 % with audio
+   running, and from 13.1 % to 0.7 % with no devices. It has two such loops, its own window and
+   the editor's. Instructions a second fell 847 → 412 M and 507 → 44 M.
+
 Upstream's master has since rewritten the Windows backend and the handler's interface; to
 move to it, the editor must be ported, and the tests above show whether it still needs this.
 The rewrite tells its handler of each `WM_PAINT` and draws then (`WindowHandler::damage`,

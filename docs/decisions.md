@@ -965,3 +965,22 @@ made for Malleator's pin (from `696328b`, which has changes 1 to 12) and main (1
 packaged application, with this line in a `[patch]` copy of baseview: idle CPU with the window
 open fell 16.8 % → 4.9 % of a core with audio, 13.1 % → 0.7 % with no devices; the editor's
 frames unchanged. Not measured on macOS or Windows, whose loops pace with their own timers.
+
+## K-X11-FOCUS-OUT. An embedded editor knows when its keyboard leaves
+
+**Owner-approved scope, 2026-10-29:** Malleator R63 requested the shared baseview fix.
+**Agent decisions, 2026-10-29 (not separately approved):** notify parented handlers for
+ordinary direct and pointer focus changes, and for normal crossings when keys follow the
+pointer. Keep direct focus across pointer leave and ignore temporary grabs and crossings
+into descendants. Do not acquire focus or alter host key forwarding. Deduplicate ownership
+changes and preserve an adjacent Out/In switch between direct and pointer focus. Linux/X11
+only; see baseview `PATCHES.md` item 16 for the reproduction and tests.
+
+**Evidence:** under Xvfb, the new embedded regression failed before with neither focus
+notification and a held key receiving no release; after it passes. The child received
+`FocusOut(NORMAL, POINTER)` with focus on its host and `FocusOut(NORMAL, NONLINEAR)` with
+focus on itself. The four X11 keyboard tests and the expose test pass, including the existing
+top-level focus test and one press/24 repeats/one release with detectable repeat enabled and
+disabled. `cargo test --manifest-path third_party/baseview/Cargo.toml`: 13 passed, 5 ignored
+(X server tests run separately). The crate's `cargo clippy --all-targets -- -D warnings` and
+`cargo fmt -- --check` pass. No audio processing or other platform was changed.

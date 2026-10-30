@@ -347,6 +347,28 @@ K-X11-REPEAT, 2026-10-28):
    running, and from 13.1 % to 0.7 % with no devices. It has two such loops, its own window and
    the editor's. Instructions a second fell 847 → 412 M and 507 → 44 M.
 
+16. **On X11, embedded editors are told when their keyboard leaves and returns**
+   (K-X11-FOCUS-OUT, Malleator R63, 2026-10-29). Change 14 selected `FOCUS_CHANGE`, but
+   notified only top-level handlers and rejected `NotifyPointer`. When a host has focus,
+   its child under the pointer receives keys and `FocusOut(Normal, Pointer)` as focus
+   moves to another top-level window; when the child has explicit focus it receives
+   `FocusOut(Normal, Nonlinear)`. Both were dropped, leaving typed notes held forever.
+   Both now notify the handler. Normal pointer crossings also notify it while keys follow
+   the pointer; direct focus keeps its keys when the pointer leaves. Crossings into a
+   descendant and temporary grab/ungrab focus are ignored. Notifications are deduplicated;
+   an adjacent Out/In pair switching between pointer and direct focus keeps ownership.
+   Keys down are forgotten at an ownership change, preserving repeat detection otherwise.
+   No host focus is taken and forwarded key events are still delivered normally.
+
+   `tests/x11_key_repeat.rs::an_embedded_keyboard_is_released_when_focus_or_pointer_leaves`
+   opens a host, its baseview child and a second top-level window under Xvfb, records the
+   raw focus mode/detail, holds A while focus leaves, then checks focus returning and
+   pointer crossings with implicit and explicit focus. It failed before (both missing
+   `Unfocused`, both missing `Focused`, implicit pointer leave missing), and passes now.
+   The existing top-level focus and both detectable/fallback repeat tests pass too:
+   one press, 24 repeats and one release. Malleator's real-editor test also failed before
+   (`held note was not released: []`); the fix belongs here, its existing release path works.
+
 Upstream's master has since rewritten the Windows backend and the handler's interface; to
 move to it, the editor must be ported, and the tests above show whether it still needs this.
 The rewrite tells its handler of each `WM_PAINT` and draws then (`WindowHandler::damage`,

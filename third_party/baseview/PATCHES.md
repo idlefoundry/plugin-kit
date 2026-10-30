@@ -369,6 +369,11 @@ K-X11-REPEAT, 2026-10-28):
    one press, 24 repeats and one release. Malleator's real-editor test also failed before
    (`held note was not released: []`); the fix belongs here, its existing release path works.
 
+   **Item 16 addendum (2026-10-29, Malleant R68):** the intermittent apparent Escape
+   loss was queued X11 image presentation, not focus/key delivery. See softbuffer PATCHES
+   item 3 (K-X11-PRESENT). This branch retains item 16 unchanged; its focus and repeat tests
+   still pass.
+
 Upstream's master has since rewritten the Windows backend and the handler's interface; to
 move to it, the editor must be ported, and the tests above show whether it still needs this.
 The rewrite tells its handler of each `WM_PAINT` and draws then (`WindowHandler::damage`,

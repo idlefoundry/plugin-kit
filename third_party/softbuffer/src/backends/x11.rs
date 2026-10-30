@@ -507,6 +507,12 @@ impl<D: HasDisplayHandle + ?Sized, W: HasWindowHandle + ?Sized> BufferInterface
             }
         }
 
+        // A quiet editor may not request another buffer for seconds. Send this frame now;
+        // waiting for SHM completion still belongs to the next buffer_mut, before reuse.
+        imp.display
+            .connection()
+            .flush()
+            .swbuf_err("Failed to flush image to window")?;
         imp.buffer_presented = true;
 
         Ok(())

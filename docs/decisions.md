@@ -965,3 +965,52 @@ made for Malleator's pin (from `696328b`, which has changes 1 to 12) and main (1
 packaged application, with this line in a `[patch]` copy of baseview: idle CPU with the window
 open fell 16.8 % → 4.9 % of a core with audio, 13.1 % → 0.7 % with no devices; the editor's
 frames unchanged. Not measured on macOS or Windows, whose loops pace with their own timers.
+
+## K-X11-FOCUS-OUT. An embedded editor knows when its keyboard leaves
+
+**Owner-approved scope, 2026-10-29:** Malleator R63 requested the shared baseview fix.
+**Agent decisions, 2026-10-29 (not separately approved):** notify parented handlers for
+ordinary direct and pointer focus changes, and for normal crossings when keys follow the
+pointer. Keep direct focus across pointer leave and ignore temporary grabs and crossings
+into descendants. Do not acquire focus or alter host key forwarding. Deduplicate ownership
+changes and preserve an adjacent Out/In switch between direct and pointer focus. Linux/X11
+only; see baseview `PATCHES.md` item 16 for the reproduction and tests.
+
+**Evidence:** under Xvfb, the new embedded regression failed before with neither focus
+notification and a held key receiving no release; after it passes. The child received
+`FocusOut(NORMAL, POINTER)` with focus on its host and `FocusOut(NORMAL, NONLINEAR)` with
+focus on itself. The four X11 keyboard tests and the expose test pass, including the existing
+top-level focus test and one press/24 repeats/one release with detectable repeat enabled and
+disabled. `cargo test --manifest-path third_party/baseview/Cargo.toml`: 13 passed, 5 ignored
+(X server tests run separately). The crate's `cargo clippy --all-targets -- -D warnings` and
+`cargo fmt -- --check` pass. No audio processing or other platform was changed.
+
+
+## K-X11-PRESENT. A quiet editor's last frame reaches the X server
+
+**Agent decisions, 2026-10-29 (not separately approved).** Malleant R68 measured an
+apparent Escape failure and traced Escape press/release reaching the embedded window.
+The old settings image remained until a later frame. softbuffer's X11 backend queued its
+image and SHM completion query without flushing; the next buffer request's reply wait
+flushed them. Flush at the end of present, for both SHM and wire images. Keep the completion
+wait before buffer reuse; no focus or audio code changes. softbuffer PATCHES item 3 and
+baseview item 16's addendum record the distinction from K-X11-FOCUS-OUT.
+
+**Evidence:** one shared target, four Cargo jobs, nice 19. Under Xvfb,
+`cargo test --manifest-path third_party/softbuffer/Cargo.toml --test x11_present --
+--ignored --nocapture`: before **0 passed, 1 failed** (`got 0x0, wanted 0x123456`);
+after **1 passed, 0 failed**, whole and damaged presents observed on a second connection
+without another frame. baseview portable tests **13 passed**, X11 expose **1 passed**
+and key/focus/repeat **4 passed** (both repeat modes 1 press/24 repeats/1 release);
+baseview strict Clippy and fmt pass. Full softbuffer test: unit **1 passed**, display test
+ignored by default; doctests **2 passed, 1 failed** because the vendored README refers to
+`examples/utils/winit_app.rs`, deliberately absent from this copy. No unrelated vendoring
+change made. Malleant's R68 records the host runs and integration checks.
+
+The pixel test also passes with Xvfb's MIT-SHM extension disabled (wire fallback).
+Default-feature softbuffer strict Clippy fails on the existing `manual_option_zip` in
+`src/backends/kms.rs:416`; the X11-only feature check is run separately. Those unrelated
+backend and vendoring issues are retained, not suppressed.
+
+`cargo clippy --manifest-path third_party/softbuffer/Cargo.toml --no-default-features
+--features x11,x11-dlopen --all-targets -- -D warnings` and softbuffer fmt: **exit 0**.

@@ -23,6 +23,9 @@ pub(super) struct EventLoop {
     exposed: bool,
     /// The keys down, to tell the server's repeats from presses (PATCHES.md, change 14).
     keys: KeyRepeats,
+    // Direct focus keeps the keys as the pointer leaves; pointer focus does not.
+    direct_focus: bool,
+    focused: bool,
     frame_interval: Duration,
     event_loop_running: bool,
 }
@@ -41,6 +44,8 @@ impl EventLoop {
             new_physical_size: None,
             exposed: false,
             keys: KeyRepeats::default(),
+            direct_focus: false,
+            focused: false,
         }
     }
 
@@ -222,6 +227,9 @@ impl EventLoop {
             }
 
             XEvent::EnterNotify(event) => {
+                if real_crossing(event.mode, event.detail) && event.same_screen_focus & 1 != 0 {
+                    self.set_focus(true);
+                }
                 self.handler.on_event(
                     &mut crate::Window::new(Window { inner: &self.window }),
                     Event::Mouse(MouseEvent::CursorEntered),
@@ -239,11 +247,9 @@ impl EventLoop {
                 );
             }
 
-            XEvent::LeaveNotify(_) => {
-                // A window in another's has the keys only while the pointer is in it (the host's
-                // window has the focus): a key let go from now on is let go elsewhere.
-                if !self.window.top_level {
-                    self.keys.forget();
+            XEvent::LeaveNotify(event) => {
+                if real_crossing(event.mode, event.detail) && !self.direct_focus {
+                    self.set_focus(false);
                 }
                 self.handler.on_event(
                     &mut crate::Window::new(Window { inner: &self.window }),
@@ -316,32 +322,53 @@ impl EventLoop {
                 }
             }
 
-            // The keyboard's focus come or gone: the keys down forgotten (a key's release may go
-            // elsewhere), and a window of its own told, as on Windows and macOS. Not for a grab's
-            // passing focus (a window manager's shortcut, a window dragged), nor for the focus
-            // moving within the window or following the pointer (PATCHES.md, change 14).
+            // X11 also sends Pointer focus to a child under the pointer when its host has
+            // the focus. Hosts that give the child focus directly use the ordinary details.
+            // A grab's passing focus does not end the editor's keyboard ownership.
             XEvent::FocusIn(event) => {
-                self.keys.forget();
-                if self.window.top_level && real_focus(event.mode, event.detail) {
-                    self.handler.on_event(
-                        &mut crate::Window::new(Window { inner: &self.window }),
-                        Event::Window(WindowEvent::Focused),
-                    );
+                if real_focus(event.mode, event.detail) {
+                    self.direct_focus = true;
+                    self.set_focus(true);
+                } else if real_crossing(event.mode, event.detail)
+                    && event.detail == NotifyDetail::POINTER
+                {
+                    self.direct_focus = false;
+                    self.set_focus(true);
                 }
             }
 
-            XEvent::FocusOut(event) => {
-                self.keys.forget();
-                if self.window.top_level && real_focus(event.mode, event.detail) {
-                    self.handler.on_event(
-                        &mut crate::Window::new(Window { inner: &self.window }),
-                        Event::Window(WindowEvent::Unfocused),
-                    );
+            XEvent::FocusOut(event)
+                if real_focus(event.mode, event.detail)
+                    || (real_crossing(event.mode, event.detail)
+                        && event.detail == NotifyDetail::POINTER) =>
+            {
+                // Switching between the host's pointer focus and the child's direct focus
+                // can send an Out/In pair without routing any keys away from the editor.
+                let stays = matches!(next, Some(XEvent::FocusIn(incoming))
+                    if incoming.event == event.event
+                        && (real_focus(incoming.mode, incoming.detail)
+                            || (real_crossing(incoming.mode, incoming.detail)
+                                && incoming.detail == NotifyDetail::POINTER)));
+                if !stays {
+                    self.direct_focus = false;
+                    self.set_focus(false);
                 }
             }
 
             _ => {}
         }
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        if self.focused == focused {
+            return;
+        }
+        self.focused = focused;
+        self.keys.forget();
+        self.handler.on_event(
+            &mut crate::Window::new(Window { inner: &self.window }),
+            Event::Window(if focused { WindowEvent::Focused } else { WindowEvent::Unfocused }),
+        );
     }
 
     fn handle_close_requested(&mut self) {
@@ -370,6 +397,12 @@ fn real_focus(mode: NotifyMode, detail: NotifyDetail) -> bool {
                 | NotifyDetail::NONLINEAR
                 | NotifyDetail::NONLINEAR_VIRTUAL
         )
+}
+
+// Crossing a descendant keeps the keyboard in the editor. Ignore grab crossings too.
+fn real_crossing(mode: NotifyMode, detail: NotifyDetail) -> bool {
+    matches!(mode, NotifyMode::NORMAL | NotifyMode::WHILE_GRABBED)
+        && detail != NotifyDetail::INFERIOR
 }
 
 fn mouse_id(id: u8) -> MouseButton {

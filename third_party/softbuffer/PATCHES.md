@@ -86,3 +86,14 @@ crates.io, remove this copy and the plug-ins' `[patch.crates-io]` entries. Other
 same files from it, remove the same tables, apply the changes again, and run the CA-72's
 test above and a plug-in's editor on macOS. If a newer release keeps its buffer and honours
 damage itself, the second change can go.
+
+3. **Flush each X11 presentation (K-X11-PRESENT, 2026-10-29).** Both whole and damaged
+   presents queued X requests without flushing the connection. With MIT-SHM the image and
+   completion query are small: a quiet editor's last frame stayed in the client until the next
+   buffer request waited for completion. Malleant's Audio & MIDI dialog logically closed on
+   Escape but could remain visible until its 2 s safety repaint (R68). Flush after submitting
+   either backend's image; retain the asynchronous SHM completion wait before buffer reuse.
+   No focus, key handling, repaint interval or audio code changes. `tests/x11_present.rs`
+   observes a mapped window from a separate X connection, without requesting another frame:
+   whole and damaged presents must become visible. Under Xvfb it fails before (black instead
+   of 0x123456) and passes after. No synchronization round trip is added to present.

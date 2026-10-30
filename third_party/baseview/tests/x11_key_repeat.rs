@@ -328,3 +328,104 @@ fn losing_the_focus_forgets_the_keys_down() {
     assert!(s[2].1 >= 5, "{:?}", s);
     assert_eq!(&s[3..], [(Seen::Unfocused, 1), (Seen::Focused, 1), (down, 1), (Seen::Up, 1)]);
 }
+
+/// The host owns focus while X11 routes the keyboard to its child under the pointer.
+/// Also exercise a host that explicitly gives its editor focus.
+#[test]
+#[ignore = "requires Xvfb with no window manager"]
+fn an_embedded_keyboard_is_released_when_focus_or_pointer_leaves() {
+    use x11rb::protocol::xproto::{ChangeWindowAttributesAux, EventMask};
+    let (conn, screen) = x11rb::connect(None).unwrap();
+    let root = conn.setup().roots[screen].root;
+    let make_host = |x| {
+        let id = conn.generate_id().unwrap();
+        conn.create_window(
+            0,
+            id,
+            root,
+            x,
+            100,
+            200,
+            160,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            0,
+            &CreateWindowAux::new().override_redirect(1),
+        )
+        .unwrap();
+        conn.map_window(id).unwrap();
+        id
+    };
+    let host = make_host(100);
+    let other = make_host(400);
+    conn.sync().unwrap();
+    let (opened_tx, opened) = mpsc::channel();
+    let (seen_tx, seen) = mpsc::channel();
+    let (close_tx, close) = mpsc::channel();
+    let mut handle = Window::open_parented(&Parent(host), options(), move |window| {
+        build(window, Keys::Focus, opened_tx, seen_tx, close)
+    });
+    let child = opened.recv_timeout(Duration::from_secs(10)).unwrap().window;
+    conn.change_window_attributes(
+        child,
+        &ChangeWindowAttributesAux::new().event_mask(
+            EventMask::FOCUS_CHANGE | EventMask::ENTER_WINDOW | EventMask::LEAVE_WINDOW,
+        ),
+    )
+    .unwrap();
+    thread::sleep(Duration::from_millis(300));
+    let focus = |id| {
+        conn.set_input_focus(InputFocus::NONE, id, x11rb::CURRENT_TIME).unwrap();
+        conn.sync().unwrap();
+        thread::sleep(Duration::from_millis(100));
+    };
+    let point = |x, y| {
+        conn.warp_pointer(x11rb::NONE, root, 0, 0, 0, 0, x, y).unwrap();
+        conn.sync().unwrap();
+        thread::sleep(Duration::from_millis(100));
+    };
+    let mut failures = Vec::new();
+    for direct in [false, true] {
+        point(120, 120);
+        focus(if direct { child } else { host });
+        drain(&seen, Duration::from_millis(100));
+        key(&conn, root, true);
+        thread::sleep(Duration::from_millis(100));
+        focus(other);
+        key(&conn, root, false);
+        let events = drain(&seen, Duration::from_millis(100));
+        eprintln!("direct={direct}: handler {events:?}");
+        if !events.contains(&Seen::Unfocused) {
+            failures.push(format!("direct={direct}: note still held"));
+        }
+        focus(if direct { child } else { host });
+        let back = drain(&seen, Duration::from_millis(100));
+        if !back.contains(&Seen::Focused) {
+            failures.push(format!("direct={direct}: no focus back"));
+        }
+        // Only pointer-routed keys leave with the pointer; explicit focus keeps its keys.
+        point(420, 120);
+        let left = drain(&seen, Duration::from_millis(100));
+        if left.contains(&Seen::Unfocused) == direct {
+            failures.push(format!("direct={direct}: crossing {left:?}"));
+        }
+        while let Some(event) = conn.poll_for_event().unwrap() {
+            match event {
+                x11rb::protocol::Event::FocusIn(e) => {
+                    eprintln!("raw FocusIn mode={:?} detail={:?}", e.mode, e.detail)
+                }
+                x11rb::protocol::Event::FocusOut(e) => {
+                    eprintln!("raw FocusOut mode={:?} detail={:?}", e.mode, e.detail)
+                }
+                _ => {}
+            }
+        }
+    }
+    let _ = close_tx.send(());
+    thread::sleep(Duration::from_millis(100));
+    handle.close();
+    conn.destroy_window(host).unwrap();
+    conn.destroy_window(other).unwrap();
+    conn.sync().unwrap();
+    assert!(failures.is_empty(), "{:?}", failures);
+}

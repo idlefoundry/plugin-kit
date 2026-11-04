@@ -1014,3 +1014,22 @@ backend and vendoring issues are retained, not suppressed.
 
 `cargo clippy --manifest-path third_party/softbuffer/Cargo.toml --no-default-features
 --features x11,x11-dlopen --all-targets -- -D warnings` and softbuffer fmt: **exit 0**.
+
+## K-SLOT-COUNT. A machine may set its own number of ngspice slots
+
+**Owner decision, 2026-11-04** (ARP 2600 D37): the idle Windows machine may run 12 ngspice
+slots for the ARP 2600's reference run (about 8 hours instead of about 24 at four). The shared
+machines keep the owner's rule of at most four.
+
+**Agent decisions, 2026-11-04** (not separately approved): the count is a file, `count`, in the
+machine's slot directory (`~/.cache/ngspice-slots/count`, or under `NGSPICE_SLOTS_DIR`), holding
+a whole number from 1 to `MAX_SLOTS` (32); without it, or with anything else in it, the default
+`SLOTS` (4) applies. A file rather than an environment variable, so the count belongs to the
+machine and one process cannot raise it on a shared one. Every lab on the machine reads the same
+file at each slot it takes; nothing a run computes changes, and a machine without the file
+behaves exactly as before.
+
+**Evidence:** `cargo test -p plugin-kit-spice` (with ngspice 47 on the Linux reference machine):
+5 passed, including the new `a_machines_count_file_sets_its_slots` (a missing, empty, zero,
+negative, fractional or too large count gives four; a count of 12 holds 12 and refuses a 13th)
+and the existing four-slot cap; clippy with warnings denied and fmt pass.

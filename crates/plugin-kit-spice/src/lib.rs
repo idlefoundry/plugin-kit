@@ -17,7 +17,7 @@
 //! - Anything ngspice reports as an error (a singular matrix, a timestep too small, an
 //!   unknown model, a failed analysis) is an [`Error`], never a partial result.
 //! - The machines are shared (from the TR-808's runner, its decisions D3 and D32): every run
-//!   takes one of [`SLOTS`] slots machine-wide ([`Slot`]), holds the timing lock shared (so
+//!   takes one of the machine's slots ([`SLOTS`] unless the machine sets its own, [`Slot`]), holds the timing lock shared (so
 //!   a timing run that holds it exclusively keeps simulations from starting), and runs at the
 //!   lowest priority (nice 19; on Windows below normal, without a console window).
 //!
@@ -182,7 +182,7 @@ impl Ngspice {
         std::fs::write(&cir, &text).map_err(|e| Error::Io(e.to_string()))?;
         // The machine is shared (the crate's documentation): every run holds the timing lock
         // shared,
-        // takes one of SLOTS slots, and runs at the lowest priority (nice 19; on Windows,
+        // takes one of the machine's slots, and runs at the lowest priority (nice 19; on Windows,
         // below normal and without a console window).
         let _timing = timing_lock();
         let _slot = Slot::acquire();
@@ -252,7 +252,23 @@ fn low_priority(program: &Path) -> Command {
 /// most four; other agents' runs share the machine).
 pub const SLOTS: usize = 4;
 
-/// One of the [`SLOTS`] run slots: an exclusive lock on one of
+/// The most slots a machine's `count` file may set ([`slots_in`]).
+pub const MAX_SLOTS: usize = 32;
+
+/// How many slots the machine allows in `dir`: the whole number in `dir/count` (1 to
+/// [`MAX_SLOTS`]), which the owner writes on a machine given over to long runs (the idle Windows
+/// machine's 12, ARP 2600 D37); without that file, or with anything else in it, [`SLOTS`]. A file
+/// rather than a variable, so the count is the machine's and not one process's.
+pub fn slots_in(dir: &Path) -> usize {
+    std::fs::read_to_string(dir.join("count"))
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|n| (1..=MAX_SLOTS).contains(n))
+        .unwrap_or(SLOTS)
+}
+
+/// One of the machine's run slots ([`SLOTS`], or its `count` file's, [`slots_in`]): an exclusive
+/// lock on one of
 /// `~/.cache/ngspice-slots/slot-N.lock` (or under `NGSPICE_SLOTS_DIR`; the TR-808's own copy
 /// used `~/.cache/808-ngspice-slots`), held until dropped, shared by every plug-in's lab on the
 /// machine. A process waits for a free slot. Without a home directory there is no limit.
@@ -290,7 +306,7 @@ impl Slot {
 
     /// A slot in `dir` if one is free now (`dir` must exist).
     pub fn try_acquire_in(dir: &Path) -> Option<Slot> {
-        for i in 0..SLOTS {
+        for i in 0..slots_in(dir) {
             let path = dir.join(format!("slot-{i}.lock"));
             let Ok(f) = std::fs::OpenOptions::new()
                 .create(true)

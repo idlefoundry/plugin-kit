@@ -1053,3 +1053,34 @@ passed it alone in 19.6 s, with no test or deadline changed. All 28 factory pres
 same sample for sample as at the kit's previous pin (41eb9d1): 4 s, 48 kHz, HI. The kit changes
 the CA-74 would also take from `main` since its pin touch X11 focus and presentation, not audio.
 Not run this round: macOS and Windows.
+
+## K-EDITOR-PIXELS. Frames drawn in part, one frame clock and shared still parts (the editor's machinery, round 2)
+
+**Agent decisions, 2026-11-04 (not separately approved), under the owner's condition of
+K-EDITOR-STORAGE.** Two more crates beside what the CA-72 and CA-74 use, no existing one
+changed, neither plug-in switched yet:
+- **`plugin-kit-pixels`**: damage rectangles added, merged by the caller's choice and clipped;
+  large mostly clear pictures laid only where they have pixels (`Sparse`); replacement and
+  source-over with one rounding; the frame turned into the window's pixels only within the
+  damage; a buffer-age helper that allows partial work only over a complete previous frame of
+  age one; the phosphor coverage (strokes, discs, three box passes, clipped tint). Repaint,
+  resize and presentation stay in each plug-in's window adapter; palettes, measurements and
+  layout stay with each plug-in (K5's rule). From the CA-72's R44, R48 and R58 to R60.
+- **`plugin-kit-editor-state`**, its first two modules: `clock`, one time source at most 30
+  frames a second, moved on by at most 50 ms at once, its interval kept through a rapid stop
+  and start (a regression test fails on the first version); `cache`, still parts built once for
+  an exact key (the caller, its appearance's generation and the scale), the build reserved
+  while it runs so that editors opening together share it, held by the editors and weakly by
+  the cache, its threads joined.
+
+**Evidence (the Linux reference machine):** fmt; strict Clippy on the workspace; the kit's whole
+suite in debug run serially: 194 passed, none failed, 3 ignored (22 tests new; rerun by the lead
+for the two crates). Among them, 600 randomised frame updates drawn in parts equal to the frame
+drawn whole, 500 sparse against dense clipping cases, conversion and blur against independent
+references. A first parallel run had two existing standalone device-listing tests fail their
+time assertions at a load above 100; both passed alone unchanged. **The CA-74 unbroken:** its
+scratch copy against this commit, in debug with ngspice required: 818 passed, 1 failed, 90
+ignored; the failure, `mcp_bridge::the_bridge_serves_mcp_and_survives_its_instance_and_its_client`,
+times a cancellation with fixed sleeps against the server's 100 ms poll, and passed alone in
+1.0 s with nothing changed; round 1's agent-bridge timeout passed in this run. All 28 factory
+presets the same sample for sample as at the kit's pin 41eb9d1. Not run: macOS and Windows.

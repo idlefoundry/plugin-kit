@@ -1,6 +1,6 @@
 [package]
 name = "plugin-kit-editor-state"
-description = "A software editor's frame clock and shared asynchronous still parts, without window or renderer types"
+description = "Editor clocks, shared stills, stepped drags, typed values, menus and preset browser state without a framework or look"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

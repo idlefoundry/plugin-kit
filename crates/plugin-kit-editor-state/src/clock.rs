@@ -11,6 +11,7 @@ pub const MAX_ADVANCE: Duration = Duration::from_millis(50);
 #[derive(Clone, Debug, Default)]
 pub struct FrameClock {
     last: Option<Instant>,
+    moving: bool,
 }
 
 impl FrameClock {
@@ -20,10 +21,11 @@ impl FrameClock {
 
     /// No tick at rest; the first moving tick advances by zero. Following ticks advance by
     /// actual time since the last accepted tick, capped at 50 ms and at most 30 times a second.
-    /// Early or backwards times do not change the clock. Resuming after rest starts afresh.
+    /// Early or backwards times do not change the clock. Resuming after rest advances by
+    /// zero but still observes the interval since the last accepted tick.
     pub fn tick(&mut self, now: Instant, moving: bool) -> Option<Duration> {
         if !moving {
-            self.reset();
+            self.moving = false;
             return None;
         }
         let elapsed = match self.last {
@@ -32,17 +34,24 @@ impl FrameClock {
                 if elapsed < FRAME_INTERVAL {
                     return None;
                 }
-                elapsed.min(MAX_ADVANCE)
+                elapsed
             }
             None => Duration::ZERO,
         };
+        let elapsed = if self.moving {
+            elapsed.min(MAX_ADVANCE)
+        } else {
+            Duration::ZERO
+        };
         self.last = Some(now);
+        self.moving = true;
         Some(elapsed)
     }
 
     /// Forget a previous timeline, for example when replacing an editor's scene.
     pub fn reset(&mut self) {
         self.last = None;
+        self.moving = false;
     }
 }
 
@@ -116,5 +125,26 @@ mod tests {
         );
         clock.reset();
         assert_eq!(clock.tick(start, true), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn rapid_stop_start_requests_cannot_bypass_the_frame_interval() {
+        let start = Instant::now();
+        let mut clock = FrameClock::new();
+        let mut last = None;
+        let mut count = 0;
+        for ms in 0..1000 {
+            let now = start + Duration::from_millis(ms);
+            if let Some(dt) = clock.tick(now, true) {
+                if let Some(previous) = last {
+                    assert!(now.duration_since(previous) >= FRAME_INTERVAL);
+                }
+                assert_eq!(dt, Duration::ZERO, "rest never advances an animation");
+                last = Some(now);
+                count += 1;
+            }
+            assert_eq!(clock.tick(now, false), None);
+        }
+        assert!(count <= 30, "{count} ticks in a second");
     }
 }

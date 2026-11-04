@@ -211,8 +211,9 @@ opacity adds no light; finite opacity is clamped to zero through one.
 
 The clock schedules from accepted ticks, rather than catching up a late deadline,
 so no pair of ticks is closer than a thirtieth of a second. Stalls advance by at
-most 50 ms, and the first moving tick after rest advances by zero. Animation shape
-and duration remain local. The cache reserves in-flight entries, closing the
+most 50 ms, and the first moving tick after rest advances by zero while preserving
+the pacing interval. Rapid stop/start requests cannot bypass the cap. Animation
+shape and duration remain local. The cache reserves in-flight entries, closing the
 CA-72's check-then-build race. Each editor keeps a clonable `Still` lease; it can
 poll or wait, and the last lease joins its worker even if the cache was dropped.
 Weak entries retain no pictures once editors release them. Caller, appearance and

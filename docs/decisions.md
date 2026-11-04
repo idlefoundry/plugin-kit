@@ -1014,3 +1014,42 @@ backend and vendoring issues are retained, not suppressed.
 
 `cargo clippy --manifest-path third_party/softbuffer/Cargo.toml --no-default-features
 --features x11,x11-dlopen --all-targets -- -D warnings` and softbuffer fmt: **exit 0**.
+
+## K-EDITOR-STORAGE. The preset library and the computer's settings, shared (the editor's machinery, round 1)
+
+**The owner, 2026-11-04** (the TR-808's D119): the TR-808's lead may change the kit as long as
+the CA-72 and the CA-74 are not broken. Here that means what is added sits beside what they use,
+and the CA-74, built against the new commit, passes its whole suite with every factory preset
+the same to the bit. `docs/brief-editor.md` stays the job's baseline.
+
+**Agent decisions, 2026-11-04 (not separately approved).** The job's split is
+`docs/editor-split.md`, made from the CA-72's public `main` (88575ba4) and the CA-74's (2ab6e04):
+what is general, what stays with each plug-in, and the later crates' interfaces in outline
+(`plugin-kit-pixels`, `plugin-kit-editor-state`). Arrangements, skin packs' slots, What's New
+and every drawing stay with the plug-ins. This round adds two crates and changes no existing
+one:
+- **`plugin-kit-library`**: the TOML preset library under the shared "Idle Foundry" folder,
+  factory sounds supplied and never written, user overlays, portable names (a clash reported,
+  never overwritten), search, tags and favourites, files written whole and moved into place.
+  A plug-in supplies a `PresetCodec`; its parameter list, player controls, versions,
+  migrations and tuning laws stay its own. Unchanged preset sections keep their bytes,
+  comments and line endings included (the CA-72's R-FX-PRESETS).
+- **`plugin-kit-settings`**: `settings.toml` beside the library, changed key by key under an
+  operating-system file lock after reading it again, unknown keys kept, a bad file left alone,
+  the whole file replaced at once. Defaults and schema stay with each plug-in.
+
+Both use only packages already in the kit's lockfile (`toml_edit` for parsing, `serde_json`,
+`tempfile`). Neither plug-in is switched to them yet. Each one's switch comes on a branch of its
+own, proven as the brief says.
+
+**Evidence (the Linux reference machine):** fmt; strict Clippy on the workspace and all
+targets; `cargo test --workspace` in debug: 172 passed, none failed, 3 ignored, 29 of them in the
+new crates (rerun by the lead for the new crates: 22 and 7 passed). **The CA-74 unbroken:** a
+scratch copy at its `main` pointed at this commit (exported, not committed), `cargo test
+--workspace --no-fail-fast` in debug: 818 passed, 1 failed, 90 ignored. The failure was the agent
+bridge's test (`an_agent_plays_notes_and_changes_settings_view_and_midi_learn`) hitting its
+15-second socket deadline during the parallel run on a heavily loaded machine; the same build
+passed it alone in 19.6 s, with no test or deadline changed. All 28 factory presets rendered the
+same sample for sample as at the kit's previous pin (41eb9d1): 4 s, 48 kHz, HI. The kit changes
+the CA-74 would also take from `main` since its pin touch X11 focus and presentation, not audio.
+Not run this round: macOS and Windows.

@@ -25,13 +25,14 @@
 //! go (the MC-79's R6).
 //!
 //! The workers are started off the audio thread ([`crate::Crew`]) and made audio threads at
-//! once (`plugin_kit_rt::promote`: on macOS the time-constraint policy for the host's block
-//! period; on Windows time-critical priority, below a host's own audio threads: the `priority` module). On macOS they also join a work interval of their own, which the first of them opens
-//! at a block's first run, declaring half the period for it ([`INTERVAL`]), and closes when it
-//! parks. They spin [`SPIN`] after a run (the next run of the block follows at once) and park
-//! after it, or at once once the block is over ([`Pool::rest`]); the audio thread wakes as many
-//! as there are voices less its own. A run carries the audio thread's floating-point flush
-//! bits, which a worker takes before it plays.
+//! once: `plugin_kit_rt::promote` (on macOS the time-constraint policy for the host's block
+//! period), but on Windows time-critical priority, below a host's own audio threads (the
+//! `priority` module). On macOS they also join a work interval of their own, which the first of
+//! them opens at a block's first run, declaring half the period for it ([`INTERVAL`]), and
+//! closes when it parks. They spin [`SPIN`] after a run (the next run of the block follows at
+//! once) and park after it, or at once once the block is over ([`Pool::rest`]); the audio thread
+//! wakes as many as there are voices less its own. A run carries the audio thread's
+//! floating-point flush bits, which a worker takes before it plays.
 
 use crate::budget::Budget;
 use std::cell::Cell;

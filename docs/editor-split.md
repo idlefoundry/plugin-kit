@@ -4,33 +4,35 @@ Inventory made on 2026-11-04 from the CA-72's `github/main` at `88575ba4` and th
 CA-74's `origin/main` at `2ab6e04`. The frozen `brief-editor.md` remains the baseline;
 its provisional R-LOOK, R-SKIN, R-TYPED and R-ULTRA became the CA-72's R44, R51,
 R52 and R48. The kit's existing `origin/main` was fast-forwarded into `editor` at
-`c46f7a1`. No existing crate is changed by this round.
+`c46f7a1` in round 1. Round 2 uses the same source commits. Neither round changes
+an existing crate or switches a plug-in to the additions.
 
 The kit holds behaviour, state and machinery. The plug-in supplies artwork, colours,
 fonts, measurements, layout, parameter identities and musical meaning. No new crate
 below needs nih-plug, baseview or softbuffer. Window events are translated by each
-plug-in's adapter. Only the proposed pixel crate needs resvg's tiny-skia, as K5 does.
+plug-in's adapter. Only the pixel crate needs resvg's tiny-skia, as K5 does.
 
 ## Inventory for the whole job
 
 Paths in the two source columns are relative to their respective repositories.
-An interface below is a proposal unless its crate is implemented in this round.
+The storage crates were implemented in round 1, the pixels and clock/cache in round 2.
+The remaining interfaces below are proposals for round 3.
 
 | Part and judgement | CA-72 source and record | CA-74 counterpart and difference | Destination and reason |
 |---|---|---|---|
 | VST3 view keys, general and already landed | `third_party/nih-plug/src/wrapper/vst3/view.rs`, R53 (R-KEYS), change 13 | The kit's nih-plug, change 15 | Existing nih-plug. Keep this host adapter there; no second key path in an editor crate. |
-| Damage rectangles, sparse pictures, composition and pixel conversion, general | `crates/ca72-panel/src/render.rs`, `strip/worn.rs`; `crates/ca72-plugin/src/editor.rs`, `mod window`, `compose`, `fill`; R44, R48, R58, R59, R60 | `crates/ca74-panel/src/render.rs`, `strip/worn.rs`; `crates/ca74-plugin/src/editor.rs` and its window composition | Proposed `plugin-kit-pixels`. Take the newer CA-72's clipped rectangles and buffer-age fallback, rather than only its older changed rows. Keep panel construction and platform presentation in each plug-in. |
-| Still parts shared at a scale, general | `crates/ca72-panel/src/presets/drawer.rs`, `shared_still`, warming thread, R44 | `crates/ca74-panel/src/presets/drop.rs`, cached drawer pictures | Proposed `plugin-kit-editor-state::cache`. Key by caller identity, appearance generation and scale; scale alone would mix looks. The caller builds the pictures; the cache owns neither their style nor window. |
-| One frame clock, general | `crates/ca72-plugin/src/opening.rs`, editor frame loop; R48 | `crates/ca74-plugin/src/opening.rs`, editor frame loop | Proposed `plugin-kit-editor-state::clock`. One time source, at most 30 frames a second and at most 50 ms advanced at once; animation duration and shape remain arguments. |
-| Preset library and factory overlay, general | `crates/ca72-plugin/src/library.rs`, R10, R18 | `crates/ca74-plugin/src/library.rs`, R6, R10, R-PRESET-LAW | `plugin-kit-library`, this round. Retain the CA-72's portable names, own-file handling, deterministic duplicate reports, overlay preservation and file-change cache. Both copies have the same storage model. |
+| Damage rectangles, sparse pictures, composition and pixel conversion, general | `crates/ca72-panel/src/render.rs`, `strip/worn.rs`; `crates/ca72-plugin/src/editor.rs`, `mod window`, `compose`, `fill`; R44, R48, R58, R59, R60 | `crates/ca74-panel/src/render.rs`, `strip/worn.rs`; `crates/ca74-plugin/src/editor.rs` and its window composition | `plugin-kit-pixels`, round 2. The newer CA-72's clipped rectangles and buffer-age fallback. Keep panel construction and platform presentation in each plug-in. |
+| Still parts shared at a scale, general | `crates/ca72-panel/src/presets/drawer.rs`, `shared_still`, warming thread, R44 | `crates/ca74-panel/src/presets/drop.rs`, cached drawer pictures | `plugin-kit-editor-state::cache`, round 2. Key by caller identity, appearance generation and scale; scale alone would mix looks. The caller builds the pictures; the cache owns neither their style nor window. |
+| One frame clock, general | `crates/ca72-plugin/src/opening.rs`, editor frame loop; R48 | `crates/ca74-plugin/src/opening.rs`, editor frame loop | `plugin-kit-editor-state::clock`, round 2. One time source, at most 30 frames a second and at most 50 ms advanced at once; animation duration and shape remain arguments. |
+| Preset library and factory overlay, general | `crates/ca72-plugin/src/library.rs`, R10, R18 | `crates/ca74-plugin/src/library.rs`, R6, R10, R-PRESET-LAW | `plugin-kit-library`, round 1. Retain the CA-72's portable names, own-file handling, deterministic duplicate reports, overlay preservation and file-change cache. Both copies have the same storage model. |
 | Sound capture and application, partly general | `crates/ca72-plugin/src/presets.rs`, `SoundParam`, `values_now`, `targets_for_sound`; R10, R18 | `crates/ca74-plugin/src/presets.rs`, `values_now`, `targets_of_sound`, tuning-law conversion | The library accepts a plug-in's codec and plain parameter ids. Framework parameter wrappers, gestures, defaults, migrations, curves and tuning-law conversion stay in the plug-in. The player's controls differ; the kit must not hard-code either list. |
 | Preset list, prompts, filtering, scrolling and text caret, general | `crates/ca72-panel/src/presets.rs`, `presets/drawer.rs`; `crates/ca72-plugin/src/presets.rs`, R10, R18, R44 | `crates/ca74-panel/src/presets.rs`, `presets/drop.rs`; `crates/ca74-plugin/src/presets.rs` | Proposed `plugin-kit-editor-state::browser` and `text`. Share semantic actions and stable selection, with caller-supplied visible rows and hit targets. Keep each drawer's drawing and dimensions. Support the CA-74's INIT and preset pads as explicit caller actions, not mandatory keys. |
 | Menus, general state and placement only | `crates/ca72-panel/src/learn.rs`, `Menu`; R34, R51 | `crates/ca74-panel/src/learn.rs`, `Menu`, grouped and marked items | Proposed `plugin-kit-editor-state::menu`. Titles and group heads cannot activate; disabled and current items remain distinct. Both renderers stay local, including all lettering and spacing. |
 | Typed readouts and typed control values, general state | `crates/ca72-panel/src/value_entry.rs`, `strip/readout.rs`; `crates/ca72-plugin/src/editor.rs`, R52, R-KNOB-ENTRY | `crates/ca74-panel/src/value_entry.rs`, editor's typed-entry state, R-KNOB-ENTRY | Proposed `plugin-kit-editor-state::value`. Selection, replacement, backspace, commit and cancel are general. Parsing units, clamping and formatting are caller functions; the field's dark glass and dot lettering stay local. |
 | Stepped drags, general arithmetic | `crates/ca72-panel/src/interact.rs`, `drag`, R51 | `crates/ca74-panel/src/interact.rs`, stepped controls | Proposed `plugin-kit-editor-state::drag`. Supply count, start, distance a step and fine multiplier. The CA-72's particular knob travel and hit areas stay local. |
-| Computer settings, general storage only | `crates/ca72-plugin/src/settings.rs`, R48, R51, R54, later per-key locking | `crates/ca74-plugin/src/settings.rs`, per-key writes and lock, four lettering sizes and preset pads | `plugin-kit-settings`, this round. Re-read under an operating-system file lock, change chosen keys, retain unknown keys, replace a complete file. Keep defaults and schema in each plug-in; neither plug-in's lettering or keyboard choices become kit policy. |
+| Computer settings, general storage only | `crates/ca72-plugin/src/settings.rs`, R48, R51, R54, later per-key locking | `crates/ca74-plugin/src/settings.rs`, per-key writes and lock, four lettering sizes and preset pads | `plugin-kit-settings`, round 1. Re-read under an operating-system file lock, change chosen keys, retain unknown keys, replace a complete file. Keep defaults and schema in each plug-in; neither plug-in's lettering or keyboard choices become kit policy. |
 | Settings key and menu contents, local choices over general menu state | Rail and editor settings menu, R51 | Rail and editor settings menu, including LOOK packs and more lettering sizes | Proposed menu state above; each plug-in supplies its groups, labels and actions. No kit-wide skin enum. |
-| Phosphor coverage, blur and compositing, general | `crates/ca72-panel/src/glow.rs`, R-LFO | `crates/ca74-panel/src/glow.rs`, R-LFO | Proposed `plugin-kit-pixels::coverage`. The mask, three box passes, clipping and source-over arithmetic can be shared. Phosphor palettes and all visual constants remain local. Add this beside K5's existing materials; do not change their behaviour. |
+| Phosphor coverage, blur and compositing, general | `crates/ca72-panel/src/glow.rs`, R-LFO | No separate `glow.rs` at the inventoried CA-74 commit; K5's surface lighting is a different operation | `plugin-kit-pixels::glow`, round 2, correcting the proposed module name and counterpart. The mask, three box passes, clipping and source-over arithmetic are shared. Phosphor palettes and all visual constants remain local. Add this beside K5's existing materials; do not change their behaviour. |
 | Skin packs and look validation, mixed | `crates/ca72-panel/src/look.rs`, R-SKIN-PACKS; separate `skin-pack` crate | `crates/ca74-panel/src/look.rs`, same pack format but its own slots and control checks | Leave with the plug-ins this job. Pack safety already belongs to `skin-pack`; slot names, font fitting and supported controls express the instrument's look. A future shared discovery cache would need its own brief. |
 | Declarative arrangement, local | `crates/ca72-panel/src/arrangement.rs`, R-SKIN-PACKS | `crates/ca74-panel/src/arrangement.rs`, different controls, fixtures and allowed areas | Leave local. An arrangement's legality depends on the instrument's fixed controls and layout. The kit receives rectangles, never panel units or a control map. |
 | What's New, partly general but outside this job | `crates/ca72-panel/src/whats_new.rs`, R-WHATS-NEW, with plug-in release selection | `crates/ca74-panel/src/whats_new.rs`, R-WHATS-NEW | Leave local this job. Text scrolling could later use the proposed scroll state, but release coverage and the dialog's drawing need a separate extraction; no update behaviour changes here. |
@@ -45,7 +47,7 @@ table sections retain their original bytes, including comments and mixed line
 endings (the CA-72's R-FX-PRESETS). Settings retain unknown values but normalise
 spacing and comments. This round does not switch either plug-in.
 
-Implemented interfaces, in outline (error results carry an explanatory string):
+Round 1's implemented interfaces, in outline (error results carry an explanatory string):
 
 ```rust,ignore
 // plugin-kit-settings: TOML types are re-exported, with no framework types.
@@ -109,26 +111,124 @@ source table instead of rebuilding a sound and discarding unknown fields. Captur
 and applying parameters remains an adapter's job: absent player controls are left
 alone; explicitly named ones may still be applied.
 
-Proposed later interfaces, without bodies:
+Round 2's implemented interfaces, without bodies (tiny-skia is re-exported):
 
 ```rust,ignore
 // plugin-kit-pixels
 pub struct Rect { pub left: i32, pub top: i32, pub right: i32, pub bottom: i32 }
+impl Rect {
+    pub const fn new(left: i32, top: i32, right: i32, bottom: i32) -> Self;
+    pub const fn is_empty(self) -> bool;
+    pub fn intersection(self, bounds: Self) -> Option<Self>;
+    pub fn union(self, other: Self) -> Self;
+}
 pub struct Damage;
-impl Damage { pub fn add(&mut self, rect: Rect); pub fn clipped(&self, bounds: Rect) -> Self; }
+impl Damage {
+    pub fn new() -> Self;
+    pub fn full(bounds: Rect) -> Self;
+    pub fn rects(&self) -> &[Rect];
+    pub fn is_empty(&self) -> bool;
+    pub fn clear(&mut self);
+    pub fn add(&mut self, rect: Rect);
+    pub fn add_clipped(&mut self, rect: Rect, bounds: Rect);
+    pub fn clipped(&self, bounds: Rect) -> Self;
+    pub fn merge(&mut self, gap: u32, maximum: usize);
+    pub fn for_buffer(bounds: Rect, changes: Option<&Self>, age: u8, complete: bool) -> Self;
+}
 pub struct Sparse;
-impl Sparse { pub fn from_pixmap(image: &Pixmap) -> Self;
-    pub fn over(&self, target: &mut Pixmap, at: (i32, i32), clip: Rect); }
-pub fn convert(source: &Pixmap, target: &mut [u32], damage: &Damage);
+impl Sparse {
+    pub fn new(image: Pixmap) -> Self;
+    pub fn from_pixmap(image: &Pixmap) -> Self;
+    pub fn pixmap(&self) -> &Pixmap;
+    pub fn over(&self, target: &mut Pixmap, at: (i32, i32), clip: Rect);
+}
+pub fn copy(target: &mut Pixmap, source: &Pixmap, at: (i32, i32), clip: Rect);
+pub fn over(target: &mut Pixmap, source: &Pixmap, at: (i32, i32), clip: Rect);
+pub fn convert(source: &Pixmap, target: &mut [u32], damage: &Damage) -> Result<(), &'static str>;
+// glow, also re-exported at the crate root:
 pub struct Coverage;
-impl Coverage { pub fn blur(&mut self, sigma: f32);
-    pub fn tint(&self, target: &mut Pixmap, rgb: [u8; 3], opacity: f32, at: (i32, i32)); }
+impl Coverage {
+    pub fn new(width: u32, height: u32) -> Option<Self>;
+    pub fn width(&self) -> u32;
+    pub fn height(&self) -> u32;
+    pub fn data(&self) -> &[f32];
+    pub fn clear(&mut self);
+    pub fn add_mask(&mut self, mask: &Mask, alpha: f32) -> Result<(), &'static str>;
+    pub fn stroke(&mut self, path: &Path, width: f32, alpha: f32);
+    pub fn disc(&mut self, at: (f32, f32), radius: f32, alpha: f32);
+    pub fn blur(&mut self, sigma: f32) -> Result<(), &'static str>;
+    pub fn tint(&self, target: &mut Pixmap, rgb: [u8; 3], opacity: f32, at: (i32, i32));
+    pub fn tint_clipped(&self, target: &mut Pixmap, rgb: [u8; 3], opacity: f32,
+        at: (i32, i32), clip: Rect);
+}
 
-// plugin-kit-editor-state: geometry and timings are arguments, no renderer.
+// plugin-kit-editor-state::clock: one caller-supplied time, no renderer.
+pub const FRAME_INTERVAL: Duration; // A thirtieth of a second, rounded up to nanoseconds.
+pub const MAX_ADVANCE: Duration; // 50 ms.
 pub struct FrameClock;
-impl FrameClock { pub fn tick(&mut self, now: Instant, moving: bool) -> Option<Duration>; }
+impl FrameClock {
+    pub fn new() -> Self;
+    pub fn tick(&mut self, now: Instant, moving: bool) -> Option<Duration>;
+    pub fn reset(&mut self);
+}
+// plugin-kit-editor-state::cache: the caller shares one cache between editors.
+pub struct StillKey<I> { pub caller: I, pub appearance: u64, /* exact scale bits */ }
+impl<I> StillKey<I> {
+    pub fn new(caller: I, appearance: u64, scale: f64) -> Result<Self, &'static str>;
+    pub fn scale(&self) -> f64;
+}
+pub struct BuildError; // A builder panicked.
+pub struct Still<V>;
+impl<V> Still<V> {
+    pub fn get(&self) -> Option<Result<Arc<V>, BuildError>>;
+    pub fn wait(&self) -> Result<Arc<V>, BuildError>;
+}
 pub struct StillCache<K, V>;
-impl<K, V> StillCache<K, V> { pub fn warm(&self, key: K, make: impl FnOnce() -> V + Send); }
+impl<K, V> StillCache<K, V> { pub fn new() -> Self; }
+impl<K: Eq + Hash, V: Send + Sync + 'static> StillCache<K, V> {
+    pub fn warm(&self, key: K, make: impl FnOnce() -> V + Send + 'static)
+        -> std::io::Result<Still<V>>;
+}
+```
+
+Refinements from the source code: `Damage::add` ignores empty rectangles and merges
+overlap and touching edges transitively; optional extra merging takes the gap and
+maximum count from the caller, rather than the CA-72's 8-pixel and 8-place choices.
+`add_clipped` preserves R58's cost rule. `for_buffer` chooses the whole frame unless
+the adapter knows the last frame is complete and buffer age is one; creation,
+resize, failed presentation and repaint invalidate that knowledge in the adapter.
+Composition takes arbitrary translated pixmaps and target-space clips. Conversion
+accepts the already composed frame, validates the target before writing, preserves
+RGB bytes and forces opaque alpha. It chooses no padding colour or panel layout.
+
+Sparse and dense source-over use the same rounded division by 255, as the CA-72's
+editor composition and `glow::lay` do; its older sparse path approximated that
+division. No current plug-in changes. Coverage keeps the three box passes, with
+bounded work even when the radius exceeds the mask; tint can be clipped after the
+complete mask has been blurred. Palettes, core/halo strengths and the source's
+minimum visible disc radius stay local. Invalid spreads are errors. Non-finite
+opacity adds no light; finite opacity is clamped to zero through one.
+
+The clock schedules from accepted ticks, rather than catching up a late deadline,
+so no pair of ticks is closer than a thirtieth of a second. Stalls advance by at
+most 50 ms, and the first moving tick after rest advances by zero. Animation shape
+and duration remain local. The cache reserves in-flight entries, closing the
+CA-72's check-then-build race. Each editor keeps a clonable `Still` lease; it can
+poll or wait, and the last lease joins its worker even if the cache was dropped.
+Weak entries retain no pictures once editors release them. Caller, appearance and
+scale changes cannot reuse an old key's build, including one still in flight.
+Thread-start errors are returned; unwinding builders finish with an error.
+
+Tests carry the source's parts/whole, clipped component, sparse/dense and conversion
+checks, with fixed random seeds, translated layers, changing clips and buffer-age
+fallbacks. Coverage has independent box-convolution and shape references and a
+clipped tint comparison. Clock tests supply timestamps; cache tests coordinate
+threads without sleeps or timing deadlines. No new dependency package or version
+is needed: pixels takes K5's resvg, and editor-state uses the standard library.
+
+Proposed round 3 interfaces, without bodies:
+
+```rust,ignore
 pub struct TextField;
 impl TextField { pub fn insert(&mut self, text: &str); pub fn backspace(&mut self);
     pub fn set_caret(&mut self, character: usize); }
@@ -147,8 +247,7 @@ impl ValueEntry { pub fn begin(&mut self, text: String); pub fn cancel(&mut self
 pub fn stepped_drag(start: usize, distance: f64, pixels_a_step: f64, count: usize) -> usize;
 ```
 
-Those later crates must carry the source tests for parts equalling whole frames,
-clipped damage, one shared still build, clock pacing, Unicode caret movement, prompt
+Those later modules must carry the source tests for Unicode caret movement, prompt
 lifetime and selection through refresh, non-activating headings, commit/cancel and
 every drag position lying on a step. Visual equivalence and frame cost are proved in
 the plug-in when it switches; no look or performance claim is made by this round.

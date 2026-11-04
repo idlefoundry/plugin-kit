@@ -1106,6 +1106,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "plugin-kit-editor-state"
+version = "0.3.1"
+
+[[package]]
 name = "plugin-kit-learn"
 version = "0.3.1"
 dependencies = [
@@ -1124,6 +1128,13 @@ dependencies = [
 
 [[package]]
 name = "plugin-kit-materials"
+version = "0.3.1"
+dependencies = [
+ "resvg",
+]
+
+[[package]]
+name = "plugin-kit-pixels"
 version = "0.3.1"
 dependencies = [
  "resvg",

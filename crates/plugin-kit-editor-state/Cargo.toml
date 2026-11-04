@@ -1,0 +1,11 @@
+[package]
+name = "plugin-kit-editor-state"
+description = "A software editor's frame clock and shared asynchronous still parts, without window or renderer types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

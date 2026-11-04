@@ -26,7 +26,7 @@
 //!
 //! The workers are started off the audio thread ([`crate::Crew`]) and made audio threads at
 //! once (`plugin_kit_rt::promote`: on macOS the time-constraint policy for the host's block
-//! period). On macOS they also join a work interval of their own, which the first of them opens
+//! period; on Windows time-critical priority, below a host's own audio threads: the `priority` module). On macOS they also join a work interval of their own, which the first of them opens
 //! at a block's first run, declaring half the period for it ([`INTERVAL`]), and closes when it
 //! parks. They spin [`SPIN`] after a run (the next run of the block follows at once) and park
 //! after it, or at once once the block is over ([`Pool::rest`]); the audio thread wakes as many
@@ -518,7 +518,9 @@ fn work<V: Play>(b: &Board<V>, period: Option<Duration>, driver: bool) {
     // becomes an audio thread.
     std::thread::park_timeout(Duration::from_nanos(1));
     let _ = Instant::now().elapsed();
-    let _priority = period.map(priority::promote);
+    if let Some(period) = period {
+        priority::promote(period);
+    }
     let token = b
         .interval
         .as_ref()
@@ -630,104 +632,43 @@ fn work<V: Play>(b: &Board<V>, period: Option<Duration>, driver: bool) {
     }
 }
 
-/// How a worker is made an audio thread. Everywhere `plugin_kit_rt::promote`; on Windows a
-/// measurement may choose another priority (`PLUGIN_KIT_WORKER_PRIORITY`, read once:
-/// `mmcss-low`, MMCSS's "Pro Audio" task at its low priority; `time-critical`, 15, outside
-/// MMCSS; `normal`), to weigh the workers against a host's own engine threads (K-POOL).
+/// How a worker is made an audio thread: `plugin_kit_rt::promote`, but on Windows time-critical
+/// priority (15) outside MMCSS, below a host's own audio and engine threads (MMCSS's "Pro Audio",
+/// 24 to 26 in Cubase). In MMCSS at 26 the workers took the processor from Cubase's engine
+/// threads, pinned to the same performance cores, and its blocks ended late (the MC-79's R30);
+/// with four instances at UNISON 4 the dropouts went from 0 to 2 a run in MMCSS to none at 15
+/// (K-POOL). A measurement may put them back in MMCSS (`PLUGIN_KIT_WORKER_PRIORITY=mmcss`, read
+/// once).
 mod priority {
     use std::time::Duration;
 
-    /// What the worker joined, left when it ends.
-    #[cfg(windows)]
-    pub(super) struct Joined(#[allow(dead_code)] Option<windows::Task>);
-    #[cfg(not(windows))]
-    pub(super) struct Joined;
-
-    pub(super) fn promote(period: Duration) -> Joined {
+    pub(super) fn promote(period: Duration) {
         #[cfg(windows)]
-        {
-            if let Some(t) = windows::promote() {
-                return Joined(t);
-            }
-            let _ = plugin_kit_rt::promote(period, period / 2);
-            Joined(None)
+        if !windows::mmcss() {
+            windows::time_critical();
+            return;
         }
-        #[cfg(not(windows))]
-        {
-            let _ = plugin_kit_rt::promote(period, period / 2);
-            Joined
-        }
+        let _ = plugin_kit_rt::promote(period, period / 2);
     }
 
     #[cfg(windows)]
     #[allow(unsafe_code)]
     mod windows {
-        use windows_sys::Win32::Foundation::HANDLE;
         use windows_sys::Win32::System::Threading::{
-            AVRT_PRIORITY_LOW, AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW,
-            AvSetMmThreadPriority, GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_NORMAL,
-            THREAD_PRIORITY_TIME_CRITICAL,
+            GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
         };
 
-        #[derive(Clone, Copy, PartialEq, Eq)]
-        enum Choice {
-            Mmcss,
-            MmcssLow,
-            TimeCritical,
-            Normal,
+        /// Whether a measurement asked for MMCSS.
+        pub(super) fn mmcss() -> bool {
+            static MMCSS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *MMCSS.get_or_init(|| {
+                std::env::var("PLUGIN_KIT_WORKER_PRIORITY").as_deref() == Ok("mmcss")
+            })
         }
 
-        fn choice() -> Choice {
-            static CHOICE: std::sync::OnceLock<Choice> = std::sync::OnceLock::new();
-            *CHOICE.get_or_init(
-                || match std::env::var("PLUGIN_KIT_WORKER_PRIORITY").as_deref() {
-                    Ok("mmcss-low") => Choice::MmcssLow,
-                    Ok("time-critical") => Choice::TimeCritical,
-                    Ok("normal") => Choice::Normal,
-                    _ => Choice::Mmcss,
-                },
-            )
-        }
-
-        /// An MMCSS task joined, left when dropped (MMCSS holds a limited number of them).
-        pub(in super::super) struct Task(HANDLE);
-
-        impl Drop for Task {
-            fn drop(&mut self) {
-                // SAFETY: the task this thread joined, left once, on the thread that joined it
-                // (the worker's own frame holds it).
-                unsafe { AvRevertMmThreadCharacteristics(self.0) };
-            }
-        }
-
-        /// None: the usual way (`plugin_kit_rt::promote`); else the measurement's, and the task
-        /// joined, if any.
-        pub(super) fn promote() -> Option<Option<Task>> {
-            match choice() {
-                Choice::Mmcss => None,
-                Choice::TimeCritical => {
-                    // SAFETY: the pseudo-handle of the calling thread.
-                    unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) };
-                    Some(None)
-                }
-                Choice::Normal => {
-                    // SAFETY: the pseudo-handle of the calling thread.
-                    unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL) };
-                    Some(None)
-                }
-                Choice::MmcssLow => {
-                    let name: Vec<u16> = "Pro Audio\0".encode_utf16().collect();
-                    let mut index = 0u32;
-                    // SAFETY: a NUL-terminated wide string and a writable task index.
-                    let h = unsafe { AvSetMmThreadCharacteristicsW(name.as_ptr(), &mut index) };
-                    if h.is_null() {
-                        return Some(None);
-                    }
-                    // SAFETY: the task just joined.
-                    unsafe { AvSetMmThreadPriority(h, AVRT_PRIORITY_LOW) };
-                    Some(Some(Task(h)))
-                }
-            }
+        pub(super) fn time_critical() {
+            // SAFETY: the pseudo-handle of the calling thread.
+            unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) };
         }
     }
 }

@@ -1084,3 +1084,37 @@ ignored; the failure, `mcp_bridge::the_bridge_serves_mcp_and_survives_its_instan
 times a cancellation with fixed sleeps against the server's 100 ms poll, and passed alone in
 1.0 s with nothing changed; round 1's agent-bridge timeout passed in this run. All 28 factory
 presets the same sample for sample as at the kit's pin 41eb9d1. Not run: macOS and Windows.
+
+## K-EDITOR-STATE. Stepped drags, typed values, menus and the presets' browser as state (the editor's machinery, round 3)
+
+**Agent decisions, 2026-11-04 (not separately approved), under the owner's condition of
+K-EDITOR-STORAGE.** `plugin-kit-editor-state` gains five modules beside its `clock` and `cache`,
+still with no dependency of its own and no drawing; nothing either plug-in uses changed:
+- **`drag`**: a stepped control's position from its count, start, signed distance, distance a
+  step and a rate the caller picks (fine with a modifier); every position lies on a step (the
+  CA-72's R51).
+- **`text`** and **`value`**: a text field counting Unicode scalar values, its selection and
+  caret kept consistent, never truncating a prefix to a length limit; typed entry begun by a
+  caller-timed double click or directly, Enter returning a value only when the text was edited
+  and the caller's parse and clamp accept it (an unedited Enter keeps the exact value), Escape
+  leaving it (R52, R-KNOB-ENTRY).
+- **`menu`**: titles, group heads, items enabled or not and the current one marked; headings
+  never chosen; a measured menu fitted within the window (R34, R51).
+- **`browser`**: the presets' list and drawer as state over a snapshot of
+  `plugin-kit-library`'s entries: search, tag filters, ALL, FAVORITES, MINE and an optional
+  FACTORY, scrolling by measured rows, the keys' prompts as caller requests with completion
+  tokens so that a late reply to an old prompt is refused. The newer CA-72's prompt lifetime is
+  kept: a filter change keeps a prompt bound to its preset; deleting it, changing its origin or
+  choosing another preset ends it. Selection and prompts follow names and origins, never row
+  numbers. SAVE AS reports what it replaces; DELETE asks first; a repeated confirmation issues
+  no second operation. The CA-74's INIT and preset pads are optional caller actions.
+Drawing, units, validation, file input and output, host gestures, MIDI Learn and when to
+refresh stay with each plug-in.
+
+**Evidence (the Linux reference machine):** fmt; strict Clippy on the workspace; the kit's whole
+suite in debug, serially: 226 passed, none failed, 3 ignored (32 new; the crate's tests rerun by
+the lead: 36 and 7 passed); two scratch adapter tests against real library entries.
+**The CA-74 unbroken:** its scratch copy against this commit, in debug with ngspice required:
+819 passed, none failed, 90 ignored, both earlier timing-sensitive tests passing in the parallel
+run; its 28 factory presets the same to the bit as at the kit's pin 41eb9d1. Not run: macOS and
+Windows.

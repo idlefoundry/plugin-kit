@@ -1115,6 +1115,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "plugin-kit-library"
+version = "0.3.1"
+dependencies = [
+ "plugin-kit-settings",
+ "tempfile",
+]
+
+[[package]]
 name = "plugin-kit-materials"
 version = "0.3.1"
 dependencies = [
@@ -1131,6 +1139,15 @@ version = "0.3.1"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "plugin-kit-settings"
+version = "0.3.1"
+dependencies = [
+ "serde_json",
+ "tempfile",
+ "toml_edit",
 ]
 
 [[package]]

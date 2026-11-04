@@ -39,10 +39,11 @@ An interface below is a proposal unless its crate is implemented in this round.
 
 The two storage crates use only packages already in the kit's dependency graph:
 `toml_edit` with parsing alone, `serde_json` for quoted strings and `tempfile` for
-complete replacements. A small TOML writer emits tables as inline values, including
-unknown nested values; it needs no additional writer package. Comments are not part
-of the storage contract. Sound-specific opaque sections can be handled by a codec
-when a plug-in migrates; this round does not switch either plug-in.
+complete replacements. A small TOML writer emits values and table headers, including
+unknown nested values; it needs no additional writer package. Unchanged preset
+table sections retain their original bytes, including comments and mixed line
+endings (the CA-72's R-FX-PRESETS). Settings retain unknown values but normalise
+spacing and comments. This round does not switch either plug-in.
 
 Implemented interfaces, in outline (error results carry an explanatory string):
 

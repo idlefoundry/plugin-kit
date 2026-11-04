@@ -1,0 +1,18 @@
+[package]
+name = "plugin-kit-settings"
+description = "Computer settings and complete TOML file replacements for Idle Foundry plug-ins"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+tempfile.workspace = true
+# Reuse the parser already used by the framework's derive machinery. Its optional
+# display feature would add a writer package; these files need only value encoding.
+toml_edit = { version = "=0.25.17", default-features = false, features = ["parse"] }
+
+[lints]
+workspace = true

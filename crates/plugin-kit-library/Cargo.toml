@@ -1,0 +1,17 @@
+[package]
+name = "plugin-kit-library"
+description = "A shared TOML preset library with immutable factory sounds and user overlays"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+plugin-kit-settings = { path = "../plugin-kit-settings" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

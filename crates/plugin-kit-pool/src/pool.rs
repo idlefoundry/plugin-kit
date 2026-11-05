@@ -776,8 +776,9 @@ pub(crate) mod tests {
         pub(crate) pause: Duration,
         /// A pause when played on any thread but this one (a worker's slow voice).
         pub(crate) away: Option<(ThreadId, Duration)>,
-        /// A panic wherever it is played (counted in [`PANICS`]).
-        pub(crate) panics: bool,
+        /// A panic whenever it is played on any thread but this one (a worker's; counted in
+        /// [`PANICS`]).
+        pub(crate) panics_away: Option<ThreadId>,
     }
 
     /// The panics of [`Fake`]s that panic.
@@ -806,7 +807,9 @@ pub(crate) mod tests {
             {
                 std::thread::sleep(pause);
             }
-            if self.panics {
+            if let Some(t) = self.panics_away
+                && self.thread != Some(t)
+            {
                 PANICS.fetch_add(1, Ordering::AcqRel);
                 panic!("a voice's panic, for the test");
             }
@@ -922,28 +925,40 @@ pub(crate) mod tests {
         assert!(runs(1) <= 50 && runs(0) == 50);
     }
 
-    /// Offline (every voice waited for), a voice that panics on a worker is failed for good:
-    /// the caller is not left waiting for it, the panic does not come again (neither the worker
-    /// nor the caller plays it again: its lock is poisoned), and the other voices play on.
+    /// Offline (every voice waited for), a voice that panics whenever a worker plays it is failed
+    /// for good once one has: the caller is not left waiting, the panic does not come again
+    /// (its lock is poisoned: neither a worker nor the caller plays it again), and the other
+    /// voices play on. (Run until a worker has taken it, then ten runs more: which thread takes
+    /// a voice first is the scheduler's.)
     #[test]
     fn a_voice_that_panics_on_a_worker_is_failed_for_good() {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let voices = fakes(3);
-            // (The caller's own voice slow, so that a worker takes the panicking one.)
-            voices[0].lock().unwrap().pause = Duration::from_millis(20);
-            voices[1].lock().unwrap().panics = true;
+            let me = std::thread::current().id();
+            voices[0].lock().unwrap().pause = Duration::from_millis(2);
+            voices[1].lock().unwrap().panics_away = Some(me);
             let mut pool = ordinary(2, &voices);
-            let played: Vec<[bool; MAX]> = (0..10)
-                .map(|_| pool.play(&[0, 1, 2], &Len(4), Deadlines::NONE))
-                .collect();
-            let runs = [0, 2].map(|k| voices[k].lock().unwrap().runs);
-            let _ = tx.send((played, voices[1].is_poisoned(), runs));
+            let (mut runs, mut after) = (0, Vec::new());
+            while after.len() < 10 && runs < 2000 {
+                let played = pool.play(&[0, 1, 2], &Len(4), Deadlines::NONE);
+                runs += 1;
+                if PANICS.load(Ordering::Acquire) > 0 {
+                    after.push(played);
+                }
+            }
+            let others = [0, 2].map(|k| voices[k].lock().unwrap().runs);
+            let _ = tx.send((runs, after, voices[1].is_poisoned(), others));
         });
-        let (played, poisoned, runs) = rx
-            .recv_timeout(Duration::from_secs(30))
-            .expect("the caller was left waiting, or played the voice that panics");
-        assert!(played.iter().all(|p| !p[1]), "the voice that panics heard");
+        let (runs, after, poisoned, others) = rx
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the caller was left waiting for a voice that panicked");
+        assert_eq!(after.len(), 10, "no worker took the voice in {runs} runs");
+        assert!(after.iter().all(|p| !p[1]), "the failed voice heard again");
+        assert!(
+            after.iter().all(|p| p[0] && p[2]),
+            "the other voices not heard"
+        );
         assert!(
             poisoned,
             "the voice's lock not poisoned: it would be played again"
@@ -953,7 +968,7 @@ pub(crate) mod tests {
             1,
             "the voice panicked again"
         );
-        assert_eq!(runs, [10, 10], "the other voices did not play on");
+        assert_eq!(others, [runs; 2], "the other voices did not play on");
     }
 
     /// On Windows the workers sit below a host's audio threads: time-critical (15) in an

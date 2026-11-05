@@ -1254,6 +1254,10 @@ race), and what was done, at `90bd207`:
   start failed and nothing gave it up. It gives it up now (`a_pool_refused_gives_its_seat_back`,
   which fails without it). The MC-79 starts its first pool through `Crew::start`, so this covers
   it too.
+- the panicking voice's test first failed on CI's macOS runner: it assumed a worker would take
+  the voice within 20 ms, and there the caller took it first. At `8690ac2` the voice panics only
+  when a worker plays it, and the test runs until one has, then ten runs more (passed on 3 of
+  the Linux reference machine's processors, as CI's runners have).
 
 **Not tried:** macOS (CI's runners only); a hybrid processor on Linux; hosts other than Cubase
 with this build; the CA-74 and the CA-72 on the crate.

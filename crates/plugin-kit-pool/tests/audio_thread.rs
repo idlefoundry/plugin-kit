@@ -209,16 +209,18 @@ fn the_audio_thread_neither_starts_nor_joins_nor_allocates() {
     loop {
         a.block(0, &list);
         b.block(0, &list);
-        if a.pool.is_none() && b.pool.is_none() && BUDGET.held() == 0 {
+        // (The helper gives the seat up just after it stops the pool.)
+        if a.pool.is_none() && b.pool.is_none() && BUDGET.held() == 0 && BUDGET.seated() == 0 {
             break;
         }
         assert!(
             t.elapsed() < Duration::from_secs(10),
-            "workers never given back"
+            "workers or seats never given back: held {}, seated {}",
+            BUDGET.held(),
+            BUDGET.seated()
         );
         std::thread::sleep(Duration::from_millis(1));
     }
-    assert_eq!(BUDGET.seated(), 0, "a seat kept with nothing held");
     for v in a.voices.iter().chain(&b.voices) {
         assert!(v.lock().unwrap().runs > 0);
     }

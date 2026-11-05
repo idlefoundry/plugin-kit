@@ -16,6 +16,7 @@ move onto it one at a time; until one has, it keeps its own copies.
 | `crates/plugin-kit-analysis` | Measurements of rendered audio for the labs and the tests: loudness (ITU-R BS.1770-4), sample and true peak, a spectrum summary, onsets, a pitch track, A/B comparison of renders |
 | `crates/plugin-kit-spice` | ngspice 47 as the offline circuit reference: runs netlists in batch mode, reads their rawfiles, fails on anything ngspice reports as an error; on Linux, macOS and Windows; at most four runs on a machine at once, at the lowest priority |
 | `crates/plugin-kit-rt` | Real-time threads: promotion to the audio threads' scheduling (macOS time constraint, Linux `SCHED_FIFO`, Windows MMCSS), CPU pinning, a watchdog that demotes a starving thread, a backoff for waits |
+| `crates/plugin-kit-pool` | The voices' worker threads: an instance's pool held only while it has voices to share, started and stopped by a helper thread of its own and never on the audio thread; one budget of workers for every process of the user's (seat files), shared evenly by the instances holding them; every voice played whole by one thread, so the samples are the same with any number of workers (K-POOL) |
 | `crates/plugin-kit-update` | The update check, made when the user asks: the latest release on GitHub through the system's curl (HTTPS only, 20 s, 1 MB, nothing sent but the request), read by the editor each frame with no thread waiting, and the installer for the system opened in the browser, from the repository's releases only |
 | `crates/plugin-kit-learn` | MIDI Learn's core: the 16 × 128 table of atomics the audio thread reads, a plug-in's list of learnable parameters, reserved controllers, absolute 7-bit values on an exact channel, jump takeover, one controller a control and one control a controller, the table saved by parameter id with the host's project, the glide of a learned knob |
 | `crates/plugin-kit-materials` | The worn skins' materials: pictures placed and resampled at a scale, a display's glass, a lit button's light on the surface round it and its translucent cap lit from inside, dots filled as one shape, a dot-matrix display's lettering (K5) |
@@ -41,7 +42,7 @@ plugin-kit-spice = { git = "https://github.com/idlefoundry/plugin-kit", rev = "<
 nih_plug = { git = "https://github.com/idlefoundry/plugin-kit", rev = "<commit>" }
 ```
 
-and `baseview`, `plugin-kit-update` and `plugin-kit-learn` the same way in its plug-in crate,
+and `baseview`, `plugin-kit-pool`, `plugin-kit-update` and `plugin-kit-learn` the same way in its plug-in crate,
 every one at the same commit. softbuffer replaces crates.io's for the whole build:
 
 ```toml

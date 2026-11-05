@@ -1110,12 +1110,12 @@ taken by the session that arranges the timing lock's window with the other sessi
   work holds its own references to what it uses.
 
 **Evidence (2026-11-04).**
-- **Tests:** `cargo test -p plugin-kit-pool` at `538f4a0` on the Linux reference machine: 30
-  passed, 1 ignored (the seat holder, a child process of the tests), and the integration test 1
-  passed. On the Windows machine with the release toolchain (`1.97.1-x86_64-pc-windows-msvc`): 29
-  passed, 1 ignored, 1 passed (the Linux-only inherited-lock test is not built there). Clippy
-  with warnings denied, with and without `--all-features`, on Linux and for Windows (GNU and
-  MSVC); rustfmt. Among the tests:
+- **Tests:** `cargo test -p plugin-kit-pool` at `76a4042` (after the review, below) on the Linux
+  reference machine: 37 passed, 1 ignored (the seat holder, a child process of the tests), and
+  the integration test 1 passed. On the Windows machine with the release toolchain
+  (`1.97.1-x86_64-pc-windows-msvc`): 35 passed, 1 ignored, 1 passed (two Linux-only tests are not
+  built there). Clippy with warnings denied, with and without `--all-features`, on Linux and for
+  Windows (GNU and MSVC); rustfmt. Among the tests:
   - the budget's arithmetic: B, C and the shares on the three machines R-THREADS measured, on a
     quad-core, and the MC-79's UNISON (`the_count_follows_the_machine`,
     `unisons_voices_bound_an_instance`, `shares_are_even`);
@@ -1154,13 +1154,29 @@ taken by the session that arranges the timing lock's window with the other sessi
   dropouts, Real Time 39 %; at UNISON 2, six runs: 1, 0, 0, 0, 0, 0 at 33–40 %. And four instances
   at UNISON 2 with no worker at all: six runs with no dropout, Real Time 51–54 %.
 - **Paced:**
-  - **On the Linux reference machine: not measured.** `unison_bench` (the engine as a host calls
-    it, one host thread at `SCHED_FIFO`, 48 kHz, 20 s a run), before (`263bf1a`, main's pool
-    with four workers) against after (this pool), at 128 and 256 frames and UNISON 1, 2 and 4,
-    waited for the exclusive timing lock from 16:29 to 17:20 and from 17:37 to 20:37. Other
-    sessions held it shared without a break the whole time (ngspice runs, preset renders, tests;
-    the load between 55 and 105), and a waiting exclusive lock does not stop new shared holders.
-    The bench and its script (`paced.sh`) are ready to run when the machine is quiet.
+  - **On the Linux reference machine** (the MC-79's `unison_bench`, as its R-POOL gives it: the engine as a host calls it, one host
+    thread at `SCHED_FIFO`, 48 kHz, 20 s a run), before (`263bf1a`, main's pool with four
+    workers) against after (this pool, `auto`) and after with no workers. At 128 and 256 frames
+    and UNISON 1, 2 and 4, two rounds, the second in the opposite order. Under the exclusive
+    timing lock, 21:21:54 to 21:34:55, after the other sessions held off for the window. Their
+    work without the lock went on, so the load average was 12 to 32 at the starts. The after
+    build predates the mend's move to the helper, which adds to the audio thread only a check at
+    the block's end that these runs never take. Worst block in ms (rounds 1 and 2), late blocks
+    (of 7,500 at 128 frames, 3,750 at 256), and the process's processor time in % of a core:
+
+    | Frames | UNISON | Before (4 workers) | After (`auto`) | After, no workers |
+    |---|---|---|---|---|
+    | 128 | 1 | 1.90, 1.95; 0 late; 25–27 % | 1.95, 1.96 (0 workers); 0 late; 26–28 % | |
+    | 128 | 2 | 2.00, 2.06; 0 late; 73–84 % | 2.15, 2.02 (1); 0 late; 52–59 % | 3.93, 3.88; 15, 44 late |
+    | 128 | 4 | 2.26, 2.07; 0 late; 128–130 % | 2.02, 2.01 (3); 0 late; 119–122 % | 7.66, 7.89; 7,386, 3,614 late |
+    | 256 | 1 | 3.14, 3.12; 0 late; 29–30 % | 3.17, 3.21 (0); 0 late; 28–30 % | |
+    | 256 | 2 | 3.18, 3.24; 0 late; 84 % | 3.25, 3.21 (1); 0 late; 58–61 % | 6.17, 6.87; 14, 21 late |
+    | 256 | 4 | 3.37, 3.36; 0 late; 134–140 % | 3.28, 3.31 (3); 0 late; 124 % | 12.48, 12.20; 3,597–3,701 late |
+
+    No voice run was cut in any run, and the watchdog never demoted the thread. So the worst block
+    is the same before and after, within 0.15 ms either way. After takes 20 to 26 points less of
+    a core at UNISON 2 and 5 to 16 less at UNISON 4. Without its worker, UNISON 2 is late in 14 to
+    44 blocks, so it keeps one (above).
   - **On the Windows machine instead** (the same bench, the release toolchain, its host thread in
     MMCSS's "Pro Audio" as a host's is; unpinned; two rounds in opposite order, 20 s each). The
     machine was otherwise idle (15 to 40 % busy at the start). Its figures are not to be relied
@@ -1180,6 +1196,48 @@ taken by the session that arranges the timing lock's window with the other sessi
 
     So time-critical cuts no more voices than MMCSS in a bench with no host's engine threads
     beside it.
+
+**An independent review, 2026-11-04** (of `dfada07`; no blocker), and what was done on each
+item, at `76a4042` (agent decisions, not separately approved, but for the owner's go to the
+review):
+1. **A seat kept when an ask was withdrawn while the helper started its pool** (UNISON back to 1
+   meanwhile): the late pool was stopped but the seat never given up. `Crew::deliver` now gives it
+   up when nothing is asked for, ready or let go
+   (`an_ask_withdrawn_while_its_pool_starts_gives_up_the_seat`).
+2. **Every share's move restarted every pool**, a pool of one worker included when its share went
+   from six to three, the audio thread then playing every voice alone for a block or more. A pool
+   now keeps the most it may have whatever its share (its ask, the voices less one, the cap) and
+   is started again only when that and the share give another number of workers
+   (`a_pool_is_kept_while_its_share_still_covers_it`).
+3. **A voice that panicked on a worker left an offline caller waiting for ever** (the worker
+   unwound without marking it). The worker now catches the panic and marks the voice failed,
+   silent for its run, and plays on (`a_voice_that_panics_on_a_worker_leaves_no_caller_waiting`).
+4. **Windows: the last core's record was dropped**: the reading needed the type's 80 bytes left
+   where a core's record has 48. The records are now read as bytes, each by its own size, at least
+   a core's, never past the end; the offsets are checked against the system's types when built
+   for Windows (`every_cores_record_is_read`).
+5. **64 seat files were held open for the process's life** (macOS's soft limit is 256 files a
+   process). Only a held seat's file stays open now; the others are opened, tried and closed at
+   each look (`only_the_seats_held_are_kept_open`, Linux).
+6. **`Crew::follow` did not check the plan's generation**: a pool for an earlier plan with the same
+   count and share was kept (playing the old voices), and an ask made before a new plan was never
+   made again. A pool now carries its plan's generation and `Ask` the generation it is for; either
+   for another plan counts as none (`a_new_plan_is_followed_whatever_the_ask`). `Ask` changed:
+   `Waiting` and `Answered` carry the generation.
+7. **Windows, a host in the real-time priority class**: there time-critical is 31, above the
+   host's threads. In that class the workers take the lowest priority instead, 22, below the
+   host's threads at 24 and up; elsewhere time-critical (15) as before
+   (`the_workers_sit_below_a_hosts_audio_threads`).
+8. **Linux's priority** (`SCHED_FIFO` at 70, `plugin-kit-rt`'s) is left as it is: the owner's to
+   decide.
+9. **`tests/audio_thread.rs`'s check that the audio thread touches no seat file proved nothing**
+   (its budget had no seat folder). It now has a temporary one, and also requires that both
+   instances held their seats in it; it waits for the helper to give the seat up after the pool.
+10. **The user's id** is `geteuid()` (it was read from `/proc` on Linux and from the temporary
+    folder's owner on macOS, root where `TMPDIR` is unset); the seats' folder is checked with
+    `symlink_metadata`, so a link put in its place is refused. The run counter's wrap is left.
+
+Each of 1, 2, 3 and 5's tests fails without its fix and passes with it.
 
 **Not tried:** macOS (CI's runners only); a hybrid processor on Linux; hosts other than Cubase
 with this build; the CA-74 and the CA-72 on the crate.

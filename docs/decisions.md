@@ -1138,7 +1138,33 @@ CA-72 move onto it later.
   same priority as a measurement's switch (`fac19d4`) gave, four instances at UNISON 4: 0, 0, 0
   dropouts, Real Time 39 %; at UNISON 2, six runs: 1, 0, 0, 0, 0, 0 at 33–40 %. And four instances
   at UNISON 2 with no worker at all: six runs with no dropout, Real Time 51–54 %.
-- **Paced on the Linux reference machine:** PACED.
+- **Paced:**
+  - **On the Linux reference machine: not measured.** `unison_bench` (the engine as a host calls
+    it, one host thread at `SCHED_FIFO`, 48 kHz, 20 s a run), before (`263bf1a`, main's pool
+    with four workers) against after (this pool), at 128 and 256 frames and UNISON 1, 2 and 4,
+    waited for the exclusive timing lock from 16:29 to 17:20 and from 17:37 to 20:37. Other
+    sessions held it shared without a break the whole time (ngspice runs, preset renders, tests;
+    the load between 55 and 105), and a waiting exclusive lock does not stop new shared holders.
+    The bench and its script (`paced.sh`) are ready to run when the machine is quiet.
+  - **On the Windows machine instead** (the same bench, the release toolchain, its host thread in
+    MMCSS's "Pro Audio" as a host's is; unpinned; two rounds in opposite order, 20 s each). The
+    machine was otherwise idle (15 to 40 % busy at the start). Its figures are not to be relied
+    on: UNISON 1, which has no worker in either build, varied from 0.6 to 3.0 ms mean at 256 frames
+    and from 1 to 851 late blocks of 3,750 between rounds. That looks like the scheduler placing
+    the bench's own thread on the hybrid processor's efficiency cores some of the time. Within
+    that noise before and after are alike in the host thread's worst block; the process's
+    processor time is lower after:
+    - at UNISON 2 and 128 frames, 50 to 55 % of a core after against 78 to 79 % before;
+    - at UNISON 4 and 256 frames, 142 to 180 % after against 144 to 165 %.
+  - **The workers' priority, paced** (the same bench, the after build, time-critical against MMCSS
+    interleaved, three rounds; voice runs cut at the deadline, late blocks):
+    - UNISON 2 at 128 frames: time-critical 15, 240 and 0 cut (8, 142, 0 late); MMCSS 1, 323 and
+      0 cut (2, 220, 1 late);
+    - UNISON 4 at 256 frames: time-critical 0, 0, 0 cut (no block late); MMCSS 84, 4 and 4 cut
+      (22, 0, 2 late).
+
+    So time-critical cuts no more voices than MMCSS in a bench with no host's engine threads
+    beside it.
 
 **Not tried:** macOS (CI's runners only); a hybrid processor on Linux; hosts other than Cubase
 with this build; the CA-74 and the CA-72 on the crate.

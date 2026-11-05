@@ -50,13 +50,21 @@ pub(crate) fn set_mark(marks: &mut dyn TableLike, key: &str, on: bool) {
 
 impl<C: PresetCodec> Library<C> {
     pub(super) fn overlay(&self) -> Result<Table, String> {
-        let table = read(&self.dir.join("factory.toml"))?.unwrap_or_default();
-        check_format(&table)?;
+        let file = self.dir.join("factory.toml");
+        let unreadable = |why: String| {
+            format!(
+                "{} cannot be read ({}): left as it is",
+                file.display(),
+                why.lines().next().unwrap_or_default()
+            )
+        };
+        let table = read(&file).map_err(&unreadable)?.unwrap_or_default();
+        check_format(&table).map_err(|_| unreadable("a format this does not know".into()))?;
         if table
             .get("presets")
             .is_some_and(|p| p.as_table_like().is_none())
         {
-            return Err("factory.toml: `presets` is not a table; left as it is".into());
+            return Err(unreadable("`presets` is not a table".into()));
         }
         Ok(table)
     }

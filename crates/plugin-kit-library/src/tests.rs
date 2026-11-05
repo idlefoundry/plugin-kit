@@ -451,7 +451,7 @@ fn bad_files_are_reported_and_no_save_or_rename_overwrites_them() {
     let bad = [
         ("Broken.toml", "name = "),
         ("Future.toml", "format = 9\nname = 'Future'\n"),
-        ("Wrong.toml", "format = 'one'\nname = 'Wrong'\n"),
+        ("Wrong.toml", "format = 8\nname = 'Wrong'\n"),
         ("Infinite.toml", "name = 'Infinite'\n[values]\nx = inf\n"),
     ];
     for (file, text) in bad {
@@ -755,4 +755,31 @@ fn separate_directories_share_the_factory_but_never_the_read_cache() {
     assert!(a.find("One").is_some() && a.find("Two").is_none());
     assert!(b.find("Two").is_some() && b.find("One").is_none());
     assert_eq!(a.factory.as_ptr(), b.factory.as_ptr());
+}
+
+#[test]
+fn a_non_integer_user_format_reads_as_a_legacy_file() {
+    for format in ["'future'", "true"] {
+        let text = format!("format = {format}\nname = 'Legacy'\n");
+        assert_eq!(
+            parse_user(&text, &PlainValues::default()).unwrap().name,
+            "Legacy"
+        );
+    }
+    assert!(parse_user("format = 9\nname = 'Future'\n", &PlainValues::default()).is_err());
+}
+
+#[test]
+fn overlay_errors_name_the_file_with_the_released_diagnostic() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = library(dir.path());
+    for text in ["format = 2\n", "presets = 3\n", "broken = ["] {
+        std::fs::write(dir.path().join("factory.toml"), text).unwrap();
+        let error = lib.favorite("Felt Bass", true).unwrap_err();
+        assert!(error.contains("factory.toml cannot be read"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("factory.toml")).unwrap(),
+            text
+        );
+    }
 }

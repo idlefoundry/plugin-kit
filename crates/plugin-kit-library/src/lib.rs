@@ -23,7 +23,7 @@ use std::time::SystemTime;
 
 pub use names::{check_name, parse_tags};
 pub use plugin_kit_settings::{Array, Item, Table, TableLike, Value, value};
-use plugin_kit_settings::{check_format, encode, parse, plugin_dir, write_atomic};
+use plugin_kit_settings::{encode, parse, plugin_dir, write_atomic};
 
 pub const FORMAT: i64 = plugin_kit_settings::FORMAT;
 
@@ -234,12 +234,21 @@ pub fn parse_factory<C: PresetCodec>(
         .collect())
 }
 
+// Both released user-file readers treat a non-integer format as an old, unversioned file.
+// Factory roots and overlays retain their stricter format checks.
+fn check_user_format(table: &Table) -> Result<(), String> {
+    match table.get("format").and_then(Item::as_integer) {
+        Some(format) if format != FORMAT => Err(format!("format {format}")),
+        _ => Ok(()),
+    }
+}
+
 pub use plugin_kit_settings::raw_section;
 
 /// A user file read on its own, without searching a directory or applying overlays.
 pub fn parse_user<C: PresetCodec>(text: &str, codec: &C) -> Result<Sound<C::Parameters>, String> {
     let table = parse(text)?;
-    check_format(&table)?;
+    check_user_format(&table)?;
     sound_of(&table, &Table::new(), codec, Some(text))
 }
 
@@ -375,7 +384,7 @@ impl<C: PresetCodec> Library<C> {
             let read = || -> Result<Entry<C::Parameters>, String> {
                 let source = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
                 let table = parse(&source)?;
-                check_format(&table)?;
+                check_user_format(&table)?;
                 let sound = sound_of(&table, &Table::new(), &self.codec, Some(&source))?;
                 if users.iter().any(|e| same(&e.sound.name, &sound.name)) {
                     return Err(format!("A second preset {}", sound.name));

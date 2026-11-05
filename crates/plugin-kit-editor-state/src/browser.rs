@@ -538,7 +538,7 @@ impl BrowserState {
     /// Previous and next wrap within the filtered set. An absent current preset
     /// starts at the first (forward) or last (backward); an empty set changes nothing.
     pub fn step(&mut self, by: isize) -> Vec<BrowserEffect> {
-        if self.list.is_empty() || by == 0 {
+        if self.list.is_empty() {
             return Vec::new();
         }
         let n = self.list.len();
@@ -811,7 +811,7 @@ impl BrowserState {
                 };
                 let edited = field.edit(edit);
                 self.focus = Some(id);
-                if id == FieldId::Search && edited {
+                if id == FieldId::Search {
                     self.first = 0;
                     self.refilter();
                 }

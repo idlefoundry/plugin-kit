@@ -507,3 +507,31 @@ fn the_released_row_bound_prompt_is_an_explicit_option() {
         assert_eq!(b.prompt().is_none(), row_bound);
     }
 }
+
+#[test]
+fn search_caret_commands_reset_the_list_even_without_a_text_change() {
+    let mut b = browser();
+    b.show(true);
+    b.scroll(2, 2);
+    assert!(b.first() > 0);
+    b.key(BrowserKey::Text(TextEdit::Home));
+    assert_eq!(b.first(), 0);
+    b.scroll(2, 2);
+    b.key(BrowserKey::Text(TextEdit::Backspace));
+    assert_eq!(b.first(), 0);
+}
+#[test]
+fn a_zero_step_still_selects_the_current_or_last_row_as_released() {
+    let mut b = browser();
+    assert!(
+        b.step(0)
+            .iter()
+            .any(|e| matches!(e, BrowserEffect::Choose(_)))
+    );
+    let current = b.current_name().unwrap().to_owned();
+    assert!(
+        b.step(0)
+            .iter()
+            .any(|e| matches!(e, BrowserEffect::Choose(id) if id.name == current))
+    );
+}

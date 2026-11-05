@@ -704,37 +704,54 @@ impl<C: PresetCodec> Library<C> {
     }
 }
 
-pub fn matching<P: Clone>(
-    list: &[Entry<P>],
+/// Metadata needed by filtering; a plug-in may implement this for its thin entry adapter.
+pub trait Metadata {
+    fn name(&self) -> &str;
+    fn description(&self) -> &str;
+    fn tags(&self) -> &[String];
+    fn favorite(&self) -> bool;
+    fn origin(&self) -> Origin;
+}
+impl<P> Metadata for Entry<P> {
+    fn name(&self) -> &str {
+        &self.sound.name
+    }
+    fn description(&self) -> &str {
+        &self.sound.description
+    }
+    fn tags(&self) -> &[String] {
+        &self.sound.tags
+    }
+    fn favorite(&self) -> bool {
+        self.favorite
+    }
+    fn origin(&self) -> Origin {
+        self.origin
+    }
+}
+pub fn matching<E: Metadata + Clone>(
+    list: &[E],
     query: &str,
     tags: &[String],
     favorite: bool,
     mine: bool,
-) -> Vec<Entry<P>> {
+) -> Vec<E> {
     let words: Vec<_> = query.split_whitespace().map(str::to_lowercase).collect();
     list.iter()
         .filter(|e| {
-            let text = format!(
-                "{} {} {}",
-                e.sound.name,
-                e.sound.description,
-                e.sound.tags.join(" ")
-            )
-            .to_lowercase();
+            let text =
+                format!("{} {} {}", e.name(), e.description(), e.tags().join(" ")).to_lowercase();
             words.iter().all(|word| text.contains(word))
-                && tags
-                    .iter()
-                    .all(|tag| e.sound.tags.iter().any(|t| same(tag, t)))
-                && (!favorite || e.favorite)
-                && (!mine || e.origin != Origin::Factory)
+                && tags.iter().all(|tag| e.tags().iter().any(|t| same(tag, t)))
+                && (!favorite || e.favorite())
+                && (!mine || e.origin() != Origin::Factory)
         })
         .cloned()
         .collect()
 }
-
-pub fn tags_of<P>(list: &[Entry<P>]) -> Vec<String> {
+pub fn tags_of<E: Metadata>(list: &[E]) -> Vec<String> {
     let mut tags: Vec<String> = Vec::new();
-    for tag in list.iter().flat_map(|e| &e.sound.tags) {
+    for tag in list.iter().flat_map(Metadata::tags) {
         if !tags.iter().any(|t| same(t, tag)) {
             tags.push(tag.clone());
         }

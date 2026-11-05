@@ -1118,3 +1118,34 @@ the lead: 36 and 7 passed); two scratch adapter tests against real library entri
 819 passed, none failed, 90 ignored, both earlier timing-sensitive tests passing in the parallel
 run; its 28 factory presets the same to the bit as at the kit's pin 41eb9d1. Not run: macOS and
 Windows.
+
+## K-EDITOR-CA72-PROOF. The CA-72 on the new crates: the same to the bit, and where the kit's copies differ (the editor's machinery, round 4)
+
+**Agent decisions, 2026-11-04 (not separately approved).** As `docs/brief-editor.md` asks, the
+CA-72 was switched onto the four new crates on a branch of its own (`kit-editor`, from its
+`main` at 8d4c05b; not pushed or merged), keeping its own nih-plug and baseview. **The proof:**
+872 editor frames (both skins and letterings at 0.44 and 0.87 of the drawing, menus, the presets'
+prompts, MIDI Learn, typed values and the lower pages) the same byte for byte before and after,
+with one build label fixed on both sides and no pixel masked; its debug suite passes (166 panel
+and 738 plug-in tests), with the approval test and the frames-drawn-in-parts tests. Its wall
+timings at loads of 35 to 114 qualify nothing; its main thread's processor time over the frames
+example was the same within 2 % (13.1 to 13.3 s).
+
+**What switched:** text and typed values, stepped drags, menu fitting, the drawer's shared still
+parts, clipped replacement and source-over, the frame's conversion, the library's portable
+names, tags and format, and the settings' shared folder and locks.
+
+**What stayed in the CA-72, because the kit's copy behaves differently** (none of it changed in
+the kit this round): the preset codec and library transactions (the generic codec cannot carry
+the CA-72's opaque effects text or its rewrite rules); the browser (tags that disappear stay at
+its end in the CA-72, the kit sorts them; a refresh keeps a different top row); the deadline
+clock (the CA-72 paces on average over 15 ms callbacks, the kit strictly between ticks); damage
+(the CA-72 merges later and keeps rectangles' order); `Sparse` (the CA-72 divides by 256, the kit
+rounds by 255); coverage (an f32 radius and an unclamped box pass); the settings' schema and
+reading a newer file (the kit refuses it); the atomic writer (the CA-72 creates files 0664, the
+kit 0600).
+
+**Decided by the lead:** the released product's behaviour is the kit's to match, not the reverse:
+the kit's copies are unreleased and nothing uses them yet. The next round makes the kit's
+defaults the CA-72's where the CA-74 agrees or has no counterpart, offers a caller option only
+where the two plug-ins genuinely differ, and then completes the CA-72's switch.

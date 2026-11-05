@@ -623,34 +623,42 @@ fn work<V: Play>(b: &Board<V>, period: Option<Duration>, driver: bool) {
             flush = want;
         }
         while let Some((_, slot)) = take(b, number) {
-            let (mut p, poisoned) = match b.voices[slot].lock() {
-                Ok(p) => (p, false),
-                Err(e) => (e.into_inner(), true),
-            };
-            // Held up between taking the voice and locking it, past the run's end: the voice
-            // is left as it is, neither played nor marked.
-            if !current(b, number) {
-                break;
-            }
-            // A voice that panics is marked failed, silent for the run, rather than leave the
-            // caller waiting for it (offline, for ever) and this worker gone.
-            let mark = if poisoned
-                || std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| p.play(&settings)))
-                    .is_err()
-            {
-                u64::from(number) | FAILED
-            } else {
-                u64::from(number)
-            };
-            b.done[slot].store(mark, Ordering::Release);
-            #[cfg(test)]
-            {
-                let hold = b.hold_after_mark.load(Ordering::Acquire);
-                if hold > 0 {
-                    std::thread::sleep(Duration::from_micros(hold));
+            // The voice locked, played and marked inside the catch, so that a voice that
+            // panics unwinds with its lock held and poisons it, as on any thread: failed for
+            // good, never played again here or on the caller's thread (which only tries its
+            // lock), and marked failed so that the caller, offline, waits for it no longer.
+            let played = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let (mut p, poisoned) = match b.voices[slot].lock() {
+                    Ok(p) => (p, false),
+                    Err(e) => (e.into_inner(), true),
+                };
+                // Held up between taking the voice and locking it, past the run's end: the
+                // voice is left as it is, neither played nor marked.
+                if !current(b, number) {
+                    return false;
                 }
+                let mark = if poisoned {
+                    u64::from(number) | FAILED
+                } else {
+                    p.play(&settings);
+                    u64::from(number)
+                };
+                b.done[slot].store(mark, Ordering::Release);
+                #[cfg(test)]
+                {
+                    let hold = b.hold_after_mark.load(Ordering::Acquire);
+                    if hold > 0 {
+                        std::thread::sleep(Duration::from_micros(hold));
+                    }
+                }
+                drop(p);
+                true
+            }));
+            match played {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(_) => b.done[slot].store(u64::from(number) | FAILED, Ordering::Release),
             }
-            drop(p);
         }
     }
 }
@@ -768,9 +776,12 @@ pub(crate) mod tests {
         pub(crate) pause: Duration,
         /// A pause when played on any thread but this one (a worker's slow voice).
         pub(crate) away: Option<(ThreadId, Duration)>,
-        /// A panic when played on any thread but this one.
-        pub(crate) panic_away: Option<ThreadId>,
+        /// A panic wherever it is played (counted in [`PANICS`]).
+        pub(crate) panics: bool,
     }
+
+    /// The panics of [`Fake`]s that panic.
+    pub(crate) static PANICS: AtomicUsize = AtomicUsize::new(0);
 
     impl Play for Fake {
         type Run = Len;
@@ -795,9 +806,8 @@ pub(crate) mod tests {
             {
                 std::thread::sleep(pause);
             }
-            if let Some(t) = self.panic_away
-                && self.thread != Some(t)
-            {
+            if self.panics {
+                PANICS.fetch_add(1, Ordering::AcqRel);
                 panic!("a voice's panic, for the test");
             }
         }
@@ -912,28 +922,38 @@ pub(crate) mod tests {
         assert!(runs(1) <= 50 && runs(0) == 50);
     }
 
-    /// Offline (every voice waited for), a voice that panics on a worker is marked failed,
-    /// silent for its run: the caller is not left waiting for it, and the worker plays on.
+    /// Offline (every voice waited for), a voice that panics on a worker is failed for good:
+    /// the caller is not left waiting for it, the panic does not come again (neither the worker
+    /// nor the caller plays it again: its lock is poisoned), and the other voices play on.
     #[test]
-    fn a_voice_that_panics_on_a_worker_leaves_no_caller_waiting() {
+    fn a_voice_that_panics_on_a_worker_is_failed_for_good() {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let voices = fakes(2);
-            let me = std::thread::current().id();
-            // (The caller's own voice slow, so that the worker takes the other.)
+            let voices = fakes(3);
+            // (The caller's own voice slow, so that a worker takes the panicking one.)
             voices[0].lock().unwrap().pause = Duration::from_millis(20);
-            voices[1].lock().unwrap().panic_away = Some(me);
-            let mut pool = ordinary(1, &voices);
-            let played: Vec<bool> = (0..20)
-                .map(|_| pool.play(&[0, 1], &Len(4), Deadlines::NONE)[1])
+            voices[1].lock().unwrap().panics = true;
+            let mut pool = ordinary(2, &voices);
+            let played: Vec<[bool; MAX]> = (0..10)
+                .map(|_| pool.play(&[0, 1, 2], &Len(4), Deadlines::NONE))
                 .collect();
-            let _ = tx.send((played, voices[1].is_poisoned()));
+            let runs = [0, 2].map(|k| voices[k].lock().unwrap().runs);
+            let _ = tx.send((played, voices[1].is_poisoned(), runs));
         });
-        let (played, poisoned) = rx
-            .recv_timeout(Duration::from_secs(20))
-            .expect("the caller was left waiting for a voice that panicked");
-        assert!(played.contains(&false), "the worker never took the voice");
-        assert!(!poisoned, "the voice's lock poisoned");
+        let (played, poisoned, runs) = rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the caller was left waiting, or played the voice that panics");
+        assert!(played.iter().all(|p| !p[1]), "the voice that panics heard");
+        assert!(
+            poisoned,
+            "the voice's lock not poisoned: it would be played again"
+        );
+        assert_eq!(
+            PANICS.load(Ordering::Acquire),
+            1,
+            "the voice panicked again"
+        );
+        assert_eq!(runs, [10, 10], "the other voices did not play on");
     }
 
     /// On Windows the workers sit below a host's audio threads: time-critical (15) in an

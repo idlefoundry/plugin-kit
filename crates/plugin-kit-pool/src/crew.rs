@@ -157,7 +157,7 @@ impl<V: Play> Crew<V> {
         } else {
             (asked, None, asked)
         };
-        Pool::start(
+        let pool = Pool::start(
             self.budget,
             Spec {
                 workers: target,
@@ -171,7 +171,12 @@ impl<V: Play> Crew<V> {
                 target,
             },
         )
-        .ok()
+        .ok();
+        // (The system would not start it: the instance holds nothing, so neither a seat.)
+        if pool.is_none() {
+            drop(lock(&self.seat).take());
+        }
+        pool
     }
 
     /// The audio thread's asks served: the pools it let go stopped (their workers back in the
@@ -536,6 +541,31 @@ mod tests {
         crew.follow(2, g4, &mut pool, &mut ask);
         assert_eq!(pool.as_ref().map(Pool::generation), Some(g4));
         drop(pool.take());
+        crew.clear();
+        assert_eq!((SIX.held(), SIX.seated()), (0, 0));
+    }
+
+    /// A pool the system would not start gives its seat back: the instance holds nothing.
+    #[test]
+    fn a_pool_refused_gives_its_seat_back() {
+        static SIX: Budget = Budget::new(|_| 6, || usize::MAX, || None);
+        let voices = fakes(4);
+        let crew = Crew::new(&SIX, "test");
+        let g = crew.plan(&voices, AUTO, Threads::Budgeted);
+        crate::pool::tests::REFUSE.set(Some(0));
+        let pool = crew.start(g, 3);
+        crate::pool::tests::REFUSE.set(None);
+        assert!(pool.is_none());
+        assert_eq!(
+            (SIX.held(), SIX.seated()),
+            (0, 0),
+            "a seat or a worker kept"
+        );
+        assert_eq!(
+            crew.start(g, 3).map(|p| p.workers()),
+            Some(3),
+            "not tried again"
+        );
         crew.clear();
         assert_eq!((SIX.held(), SIX.seated()), (0, 0));
     }

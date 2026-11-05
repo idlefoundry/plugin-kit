@@ -1044,6 +1044,12 @@ owner approved moving the CA-72's thread model (its 0.2.6 and later) into the ki
 worker pool, the kit's planned step 4, with the MC-79 its first user ("3. Yes"). The CA-74 and the
 CA-72 move onto it later.
 
+**Owner decisions, 2026-11-04, later** (on the questions the first version of this record raised):
+the workers at time-critical priority on Windows, "Yes"; the MC-79's spare voices mended on the
+helper thread rather than nih-plug's, "Yes"; this record's pull request and the MC-79's branch
+merged after an independent review, "Yes". The paced figures on the Linux reference machine are
+taken by the session that arranges the timing lock's window with the other sessions.
+
 **Agent decisions, 2026-11-04** (not separately approved):
 
 - **One crate, generic over the voices.** A plug-in's voice implements `Play`; what a run tells
@@ -1080,7 +1086,8 @@ CA-72 move onto it later.
 - **The CA-72's R-DROPOUTS.** In real time the audio thread waits for the workers spinning, its
   clock read every 16 looks, never yielding or sleeping. A run offered past the voices' deadline
   is still shared until the block's grace, the period's end, which the plug-in gives.
-- **On Windows the workers run at time-critical priority (15), outside MMCSS**, below a host's
+- **On Windows the workers run at time-critical priority (15), outside MMCSS** (approved by the
+  owner, above), below a host's
   own audio and engine threads, where `plugin-kit-rt` puts them in MMCSS's "Pro Audio" at 26.
   Measured in Cubase (below): with four instances at UNISON 4, MMCSS gave 0, 1 and 2 dropouts in
   three runs and time-critical none, with Cubase's Real Time meter at 52 % against 39 %. The risk
@@ -1094,12 +1101,18 @@ CA-72 move onto it later.
   - ULTRA's split crews;
   - promoting a standalone's own audio thread (R-DROPOUTS, R-RTKIT).
 - **The helper does the crew's work and anything else a plug-in gives it**, on bits of its own
-  (`SERVE` is the crew's). Between asks it looks at the other processes' seats every 0.5 s.
+  (`SERVE` is the crew's; the MC-79 mends its spare voices there). Between asks it looks at the
+  other processes' seats every 0.5 s.
+- **Work on the helper is told when the helper is being stopped** (`Stopping`, given to the work
+  with the asks), so that a long task stops at its next step: a host destroying the plug-in in the
+  middle of a mend of four voices then waits for one at most. The helper is joined when dropped,
+  so no work of it runs once the plug-in is gone; a plug-in drops it before its pool, and the
+  work holds its own references to what it uses.
 
 **Evidence (2026-11-04).**
-- **Tests:** `cargo test -p plugin-kit-pool` on the Linux reference machine: 29 passed, 1 ignored
-  (the seat holder, a child process of the tests), and the integration test 1 passed. On the
-  Windows machine with the release toolchain (`1.97.1-x86_64-pc-windows-msvc`), at `79a7019`: 28
+- **Tests:** `cargo test -p plugin-kit-pool` at `538f4a0` on the Linux reference machine: 30
+  passed, 1 ignored (the seat holder, a child process of the tests), and the integration test 1
+  passed. On the Windows machine with the release toolchain (`1.97.1-x86_64-pc-windows-msvc`): 29
   passed, 1 ignored, 1 passed (the Linux-only inherited-lock test is not built there). Clippy
   with warnings denied, with and without `--all-features`, on Linux and for Windows (GNU and
   MSVC); rustfmt. Among the tests:
@@ -1113,8 +1126,10 @@ CA-72 move onto it later.
     and when it no longer wants them (`a_crew_holds_workers_only_while_wanted`);
   - the shares following the instances (`the_shares_follow_the_instances`);
   - the audio thread starting, joining, allocating and freeing nothing, and touching no seat file,
-    while two instances' workers come and go through six changes, a helper serving each
-    (`tests/audio_thread.rs`).
+    while two instances' workers come and go through six changes, a helper serving each, asked
+    by the audio thread (`tests/audio_thread.rs`);
+  - a helper dropped in the middle of a task of many steps stopping it at its next one, the drop
+    returning once it has, nothing of the work left (`a_helper_dropped_mid_task_stops_it_at_its_next_step`).
 - **Cubase Pro 15.0.30 on the Windows machine** (i5-13600K: 6 performance cores, 8 efficiency;
   20 hardware threads). The MC-79's VST3 built with the release toolchain, on a record-armed track
   (outside ASIO-Guard). Steinberg's built-in ASIO driver at 480 samples and 48 kHz, out through

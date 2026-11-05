@@ -25,7 +25,7 @@ pub mod seats;
 
 pub use budget::{Budget, LOOK};
 pub use crew::{AUTO, Ask, Crew};
-pub use helper::{Helper, SERVE};
+pub use helper::{Helper, SERVE, Stopping};
 pub use machine::{Cores, cores};
 pub use pool::{Deadlines, MAX, Play, Pool, Run, SPIN, Shared, Threads, threads_here};
 

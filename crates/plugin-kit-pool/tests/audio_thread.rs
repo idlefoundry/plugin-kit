@@ -96,7 +96,7 @@ impl Instance {
             .collect();
         let crew = Arc::new(Crew::new(&BUDGET, "audio-test"));
         let c = crew.clone();
-        let helper = Helper::start("audio-test-helper", &BUDGET, move |asks| {
+        let helper = Helper::start("audio-test-helper", &BUDGET, move |asks, _| {
             if asks & SERVE != 0 {
                 c.serve();
             }

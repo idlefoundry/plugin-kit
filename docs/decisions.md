@@ -1110,10 +1110,10 @@ taken by the session that arranges the timing lock's window with the other sessi
   work holds its own references to what it uses.
 
 **Evidence (2026-11-04).**
-- **Tests:** `cargo test -p plugin-kit-pool` at `76a4042` (after the review, below) on the Linux
-  reference machine: 37 passed, 1 ignored (the seat holder, a child process of the tests), and
+- **Tests:** `cargo test -p plugin-kit-pool` at `90bd207` (after the reviews, below) on the Linux
+  reference machine: 38 passed, 1 ignored (the seat holder, a child process of the tests), and
   the integration test 1 passed. On the Windows machine with the release toolchain
-  (`1.97.1-x86_64-pc-windows-msvc`): 35 passed, 1 ignored, 1 passed (two Linux-only tests are not
+  (`1.97.1-x86_64-pc-windows-msvc`): 36 passed, 1 ignored, 1 passed (two Linux-only tests are not
   built there). Clippy with warnings denied, with and without `--all-features`, on Linux and for
   Windows (GNU and MSVC); rustfmt. Among the tests:
   - the budget's arithmetic: B, C and the shares on the three machines R-THREADS measured, on a
@@ -1210,8 +1210,15 @@ review):
    is started again only when that and the share give another number of workers
    (`a_pool_is_kept_while_its_share_still_covers_it`).
 3. **A voice that panicked on a worker left an offline caller waiting for ever** (the worker
-   unwound without marking it). The worker now catches the panic and marks the voice failed,
-   silent for its run, and plays on (`a_voice_that_panics_on_a_worker_leaves_no_caller_waiting`).
+   unwound without marking it). The worker now locks, plays and marks the voice inside a catch:
+   a voice that panics unwinds with its lock held, so the lock is poisoned as on any thread, and
+   the worker marks it failed and plays on. The voice is then failed for good: neither a worker
+   nor the caller's thread (which only tries its lock) plays it again, so the panic does not come
+   again, and the host's thread never meets it. The first fix (`90bd207` corrects it, after a
+   second review) caught the panic outside the lock, which left the voice unpoisoned: the
+   caller's thread could then play it and panic through the host's process call
+   (`a_voice_that_panics_on_a_worker_is_failed_for_good`: no wait, one panic only, the voice never
+   heard, the other voices playing on).
 4. **Windows: the last core's record was dropped**: the reading needed the type's 80 bytes left
    where a core's record has 48. The records are now read as bytes, each by its own size, at least
    a core's, never past the end; the offsets are checked against the system's types when built
@@ -1226,8 +1233,9 @@ review):
    `Waiting` and `Answered` carry the generation.
 7. **Windows, a host in the real-time priority class**: there time-critical is 31, above the
    host's threads. In that class the workers take the lowest priority instead, 22, below the
-   host's threads at 24 and up; elsewhere time-critical (15) as before
-   (`the_workers_sit_below_a_hosts_audio_threads`).
+   host's threads at 24 and up, rather than MMCSS; elsewhere time-critical (15) as before
+   (`the_workers_sit_below_a_hosts_audio_threads`). An agent decision, the reviewer's
+   recommendation to the owner, whose answer is awaited.
 8. **Linux's priority** (`SCHED_FIFO` at 70, `plugin-kit-rt`'s) is left as it is: the owner's to
    decide.
 9. **`tests/audio_thread.rs`'s check that the audio thread touches no seat file proved nothing**
@@ -1238,6 +1246,14 @@ review):
     `symlink_metadata`, so a link put in its place is refused. The run counter's wrap is left.
 
 Each of 1, 2, 3 and 5's tests fails without its fix and passes with it.
+
+**A second review, 2026-11-04** (of `9de82b3`: 1, 2, 4 to 7, 9 and 10 confirmed fixed, with no new
+race), and what was done, at `90bd207`:
+- item 3's fix corrected (above);
+- **a pool the system would not start kept its seat**: `Crew::start` took the seat, then the
+  start failed and nothing gave it up. It gives it up now (`a_pool_refused_gives_its_seat_back`,
+  which fails without it). The MC-79 starts its first pool through `Crew::start`, so this covers
+  it too.
 
 **Not tried:** macOS (CI's runners only); a hybrid processor on Linux; hosts other than Cubase
 with this build; the CA-74 and the CA-72 on the crate.

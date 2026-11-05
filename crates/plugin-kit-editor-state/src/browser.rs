@@ -175,9 +175,23 @@ struct Pending {
     ends_prompt: bool,
 }
 
+/// A measured drawing adapter's view fields, independent of any colours or units.
+#[derive(Clone, Debug)]
+pub struct BrowserView {
+    pub search: TextField,
+    pub tab: Tab,
+    pub picked: Vec<String>,
+    pub first: usize,
+    pub tags_first: usize,
+    pub tag_columns: usize,
+    pub tag_rows: usize,
+    pub focus: Option<FieldId>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct BrowserState {
     open: bool,
+    prompts_require_visible_row: bool,
     all: Vec<Preset>,
     list: Vec<Preset>,
     search: TextField,
@@ -219,6 +233,13 @@ impl BrowserState {
             tag_columns: 1,
             ..Self::default()
         }
+    }
+
+    /// CA-74 R37/R-PRESET-KEYS ends a prompt when filtering removes its row.
+    /// The CA-72 default keeps a prompt while its preset still exists.
+    pub fn set_prompts_require_visible_row(&mut self, on: bool) {
+        self.prompts_require_visible_row = on;
+        self.refilter();
     }
 
     pub fn is_open(&self) -> bool {
@@ -278,7 +299,7 @@ impl BrowserState {
         }
     }
 
-    fn field_mut(&mut self, id: FieldId) -> Option<&mut TextField> {
+    pub fn field_mut(&mut self, id: FieldId) -> Option<&mut TextField> {
         match (id, self.prompt.as_mut()) {
             (FieldId::Search, _) => Some(&mut self.search),
             (FieldId::Edit, Some(Prompt::Rename { field, .. } | Prompt::Tags { field, .. })) => {
@@ -303,7 +324,7 @@ impl BrowserState {
         true
     }
 
-    fn end_prompt(&mut self) {
+    pub fn end_prompt(&mut self) {
         self.prompt = None;
         self.pending = None;
         self.focus = self.open.then_some(FieldId::Search);
@@ -333,14 +354,38 @@ impl BrowserState {
         self.current = name.map(str::to_owned);
     }
 
+    /// Import a measured view without treating an unchanged filter as a new search.
+    /// This lets a drawing adapter retain editable view fields without another browser model.
+    pub fn set_view(&mut self, view: BrowserView) {
+        self.search = view.search;
+        self.tab = view.tab;
+        self.picked = view.picked;
+        self.first = view.first;
+        self.tags_first = view.tags_first;
+        self.tag_columns = view.tag_columns;
+        self.tag_rows = view.tag_rows;
+        self.focus = view.focus;
+        self.refilter();
+    }
+
+    /// Observe a host's preset change. A SAVE AS still holds its proposed name;
+    /// a prompt bound to the previous sound ends (CA-72 R18).
+    pub fn observe_current(&mut self, name: Option<&str>) {
+        if self
+            .prompt
+            .as_ref()
+            .and_then(Prompt::preset)
+            .is_some_and(|p| name.is_none_or(|name| !same(&p.name, name)))
+        {
+            self.end_prompt();
+        }
+        self.current = name.map(str::to_owned);
+    }
+
     /// Replace the metadata snapshot copied from `plugin-kit-library::Entry`.
     /// No file is read for filtering. Selection follows the name, prompts also
     /// require the same origin, and a visible selection stays in view after sorting.
     pub fn refresh(&mut self, presets: impl IntoIterator<Item = Preset>) {
-        let keep_visible = self
-            .selected_row()
-            .is_some_and(|i| self.visible > 0 && i >= self.first && i - self.first < self.visible);
-        let top = self.list.get(self.first).map(Preset::id);
         self.all = presets.into_iter().collect();
         self.all.sort_by_key(|e| e.name.to_lowercase());
         self.refilter();
@@ -359,15 +404,7 @@ impl BrowserState {
         } else if request_vanished {
             self.pending = None;
         }
-        if let Some(top) = top
-            && let Some(i) = self.list.iter().position(|e| matches_id(e, &top))
-        {
-            self.first = i;
-        }
         self.first = clamp_first(self.first, self.list.len(), self.visible);
-        if keep_visible {
-            self.bring_into_view();
-        }
     }
 
     fn refilter(&mut self) {
@@ -398,12 +435,17 @@ impl BrowserState {
             .cloned()
             .collect();
         let mut tags: Vec<String> = Vec::new();
-        for tag in self.all.iter().flat_map(|e| &e.tags).chain(&self.picked) {
+        for tag in self.all.iter().flat_map(|e| &e.tags) {
             if !tags.iter().any(|t| same(t, tag)) {
                 tags.push(tag.clone());
             }
         }
         tags.sort_by_key(|t| t.to_lowercase());
+        for tag in &self.picked {
+            if !tags.iter().any(|t| same(t, tag)) {
+                tags.push(tag.clone());
+            }
+        }
         self.chips = tags
             .into_iter()
             .map(|tag| {
@@ -411,6 +453,15 @@ impl BrowserState {
                 (tag, on)
             })
             .collect();
+        if self.prompts_require_visible_row
+            && self
+                .prompt
+                .as_ref()
+                .and_then(Prompt::preset)
+                .is_some_and(|id| !self.list.iter().any(|p| matches_id(p, id)))
+        {
+            self.end_prompt();
+        }
         self.first = clamp_first(self.first, self.list.len(), self.visible);
         self.tags_first = clamp_first(
             self.tags_first,
@@ -465,6 +516,10 @@ impl BrowserState {
             self.chips.len().div_ceil(columns.max(1)),
             self.tag_rows,
         );
+    }
+
+    pub fn bring_current_into_view(&mut self) {
+        self.bring_into_view();
     }
 
     fn bring_into_view(&mut self) {

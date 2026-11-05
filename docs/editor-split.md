@@ -397,3 +397,27 @@ request errors and retries, stale completions, replacement warnings and optional
 actions. No new dependency package, version or crate dependency is added. Visual
 equivalence and frame cost are proved in a plug-in when it switches; no instrument
 is switched and no look or performance claim is made by this round.
+
+## Round 5: the released products are the default
+
+The lead's K-EDITOR-CA72-PROOF decision supersedes the unreleased choices above.
+The sources remain CA-72 `github/main` at `8d4c05b` and CA-74 `origin/main` at
+`2ab6e04`. These four crates still sit beside everything either released product
+uses. No existing framework, audio, materials or standalone crate changes.
+
+| Difference | Released evidence | Settlement |
+|---|---|---|
+| Preset rewriting and opaque data | Both `plugin/src/library.rs` files, CA-72 R10/R18/R-FX-PRESETS and CA-74 R6/R10/R-PRESET-LAW: metadata rewrites reconstruct recognised keys; the CA-72 also appends effects verbatim | Reconstruct presets by default; codecs read original source through `read_source`, separate capture exclusions with `prepare_save`, and control bytes through `encode_preset` and `encode_table`. The CA-72 keeps its schema, migrations and effects interpretation. |
+| Destination move and library locking | Both library files move the owned filename before rewriting and create no directory lock file | The default follows both; same-process mutations are serialised without an extra file. Overlay unknown values survive, malformed individual marks are replaced on editing, and unchanged overlays are not written. |
+| Tag chips and top row | Both `plugin/src/presets.rs`, CA-72 R18 and CA-74 R37/R-PRESET-KEYS, append vanished selected tags after sorted present tags and clamp the numeric top row | Both are the default. |
+| Prompt lifetime | CA-72 keeps a filtered-out preset's prompt; CA-74 `plugin/src/presets.rs::refilter` ends it when its row disappears (R37/R-PRESET-KEYS) | CA-72 default; `set_prompts_require_visible_row(true)` selects CA-74 behaviour. |
+| Clock | Both `plugin/src/editor.rs::move_opening`, CA-72 R48 and CA-74 R-ULTRA, advance a deadline with 15 ms callbacks and cap elapsed time at 50 ms | Deadline pacing is the default, including rounding the interval to 33,333,333 ns. |
+| Damage | CA-72 `panel/src/render.rs::merged` (R58/R59) defers merging, uses a strict gap and swap-removal order; CA-74 `panel/src/render.rs::add_damage` (R-FRAMES) eagerly joins inclusively and appends the union | CA-72 default; `Damage::with_eager_merging(gap)` selects CA-74 order and inclusion, with its gap supplied by the caller. |
+| Sparse blend | CA-72 `panel/src/strip/worn.rs::Sparse` (R44/R48) divides by 256; CA-74 has no sparse counterpart | Sparse defaults to that pipeline arithmetic. Dense composition keeps rounded division by 255. |
+| Coverage | CA-72 `panel/src/glow.rs` (R-LFO) calculates radius in f32 and leaves box-pass round-off unclamped; CA-74 has no counterpart | Both become the default; palettes and the caller's minimum disc radius stay local. |
+| Future settings | Both `plugin/src/settings.rs::table`, CA-72 R48/R51/R54 and CA-74 R-ULTRA, read known keys in newer files and rewrite only chosen keys | Read newer formats by default; bad TOML stays untouched. `Settings::read_with` and `change_with` let callers retain their schema and serialisation. |
+| Creation mode and lock access | Both library writers create normal files under the process's umask; CA-72's settings lock is write-only and path-bearing errors identify failure | Normal creation permissions (0666 before umask and directory ACLs) and write-only settings locks are the defaults. |
+
+Only the two documented product differences need options. Parameters, factory
+versions, tuning laws, byte spelling, error wording and panel geometry are codec
+or adapter policy. No unreleased behaviour is retained as a compatibility switch.

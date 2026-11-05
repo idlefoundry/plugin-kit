@@ -3,7 +3,7 @@
 //!
 //! A caller interprets its own keys and supplies its defaults. [`Settings::change`]
 //! reads again under a file lock, changes only the chosen keys and replaces a whole
-//! file. Unknown keys survive. Unreadable and future-format files are left alone.
+//! file. Unknown keys survive, including those in newer formats. Unreadable files are left alone.
 //! These functions do file I/O and belong off the audio thread.
 
 mod toml;
@@ -12,7 +12,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-pub use toml::{encode, encode_preserving, parse};
+pub use toml::{encode, encode_preserving, parse, raw_section};
 pub use toml_edit::{Array, Item, Table, TableLike, Value, value};
 
 pub const FORMAT: i64 = 1;
@@ -86,7 +86,15 @@ pub fn plugin_dir(name: &str) -> Result<PathBuf, String> {
 pub fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
     let parent = parent(path);
     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+    let mut builder = tempfile::Builder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o666));
+    }
+    let mut temporary = builder
+        .tempfile_in(parent)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     temporary
         .write_all(text.as_bytes())
         .and_then(|()| temporary.as_file().sync_all())
@@ -107,13 +115,13 @@ fn parent(path: &Path) -> &Path {
 pub fn lock(path: &Path) -> Result<File, String> {
     std::fs::create_dir_all(parent(path)).map_err(|e| e.to_string())?;
     let file = OpenOptions::new()
-        .read(true)
         .write(true)
         .create(true)
         .truncate(false)
         .open(path)
-        .map_err(|e| e.to_string())?;
-    file.lock().map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    file.lock()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(file)
 }
 
@@ -159,11 +167,37 @@ impl Settings {
     /// No file is `None`. An unreadable file is an error; the caller may display
     /// that error and use its defaults without losing the file on the next edit.
     pub fn read(&self) -> Result<Option<Table>, String> {
-        let table = read(&self.path)?;
-        if let Some(table) = &table {
-            check_format(table)?;
+        read(&self.path)
+    }
+
+    /// Read through the caller's schema parser, including future-format keys.
+    pub fn read_with<T>(
+        &self,
+        parse: impl FnOnce(&str) -> Result<T, String>,
+    ) -> Result<Option<T>, String> {
+        match std::fs::read_to_string(&self.path) {
+            Ok(text) => parse(&text)
+                .map(Some)
+                .map_err(|e| format!("{}: {e}", self.path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("{}: {e}", self.path.display())),
         }
-        Ok(table)
+    }
+
+    /// Re-read under the settings lock, then let the caller parse, change and encode its schema.
+    /// `None` abandons a transaction without writing (for a claim already taken, for example).
+    pub fn change_with<T>(
+        &self,
+        change: impl FnOnce(Option<&str>) -> Result<(T, Option<String>), String>,
+    ) -> Result<T, String> {
+        let _lock = lock(&self.path.with_extension("toml.lock"))?;
+        let source = self.read_with(|text| Ok(text.to_owned()))?;
+        let (result, text) = change(source.as_deref())?;
+        if let Some(text) = text {
+            parse(&text)?;
+            write_atomic(&self.path, &text)?;
+        }
+        Ok(result)
     }
 
     /// Re-read and change chosen keys under the same lock in every instance and

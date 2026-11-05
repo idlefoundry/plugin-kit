@@ -37,7 +37,8 @@ impl Sparse {
         &self.pixmap
     }
 
-    /// Source-over, as [`crate::over`], without visiting transparent runs.
+    /// Source-over with tiny-skia’s integer pipeline division by 256 (CA-72 R44),
+    /// without visiting transparent runs. Dense `over` retains rounded division by 255.
     pub fn over(&self, target: &mut Pixmap, at: (i32, i32), clip: Rect) {
         let Some(r) = compose::place(target, &self.pixmap, at, clip) else {
             return;
@@ -55,10 +56,14 @@ impl Sparse {
                 continue;
             }
             let row = Rect::new(left as i32, y as i32, right as i32, y as i32 + 1);
-            compose::blend(
-                compose::target_row(target, row, y as i32),
-                compose::source_row(&self.pixmap, at, row, y as i32),
-            );
+            let src = compose::source_row(&self.pixmap, at, row, y as i32);
+            let dst = compose::target_row(target, row, y as i32);
+            for (s, d) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
+                let keep = 255 - u16::from(s[3]);
+                for c in 0..4 {
+                    d[c] = (u16::from(s[c]) + ((u16::from(d[c]) * keep + 255) >> 8)) as u8;
+                }
+            }
         }
     }
 }

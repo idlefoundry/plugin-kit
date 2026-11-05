@@ -605,7 +605,7 @@ fn a_plugins_codec_keeps_its_own_types_and_factory_defaults() {
 }
 
 #[test]
-fn a_failed_codec_save_leaves_the_previous_sound_and_filename() {
+fn a_failed_codec_rewrite_keeps_contents_after_the_released_case_move() {
     let dir = tempfile::tempdir().unwrap();
     let lib = library(dir.path());
     lib.save("Own", vec![("amount".into(), 1.0)], None).unwrap();
@@ -615,41 +615,84 @@ fn a_failed_codec_save_leaves_the_previous_sound_and_filename() {
         lib.save("own", vec![("amount".into(), f64::NAN)], None)
             .is_err()
     );
-    assert_eq!(std::fs::read(file).unwrap(), original);
-    assert_eq!(toml_files(dir.path()), ["Own.toml"]);
+    assert_eq!(
+        std::fs::read(dir.path().join("own.toml")).unwrap(),
+        original
+    );
+    assert_eq!(toml_files(dir.path()), ["own.toml"]);
 }
 
-/// The CA-72's R-FX-PRESETS preservation tests, made general: an unchanged
-/// section remains opaque even through a save, rename, favourite or tags change.
+#[derive(Clone, Debug)]
+struct Opaque;
+impl PresetCodec for Opaque {
+    type Parameters = (Vec<(String, f64)>, Option<String>);
+    fn read(&self, table: &Table, defaults: &Table) -> Result<Self::Parameters, String> {
+        Ok((PlainValues::default().read(table, defaults)?, None))
+    }
+    fn read_source(
+        &self,
+        table: &Table,
+        defaults: &Table,
+        source: Option<&str>,
+    ) -> Result<Self::Parameters, String> {
+        let mut p = self.read(table, defaults)?;
+        p.1 = source.and_then(|s| s.find("# opaque").map(|at| s[at..].to_owned()));
+        Ok(p)
+    }
+    fn write(&self, p: &Self::Parameters, table: &mut Table) -> Result<(), String> {
+        PlainValues::default().write(&p.0, table)
+    }
+    fn encode_preset(&self, table: &Table, p: &Self::Parameters) -> Result<String, String> {
+        let mut text = encode(table)?;
+        if let Some(raw) = &p.1 {
+            text.push_str(raw);
+        }
+        Ok(text)
+    }
+}
 #[test]
-fn opaque_sections_keep_every_byte_including_mixed_line_endings() {
-    let template = "\n# untouched\n[extra] # here\nstate = '''{\"format\":1,\"slots\":[]}'''\ntext = '''\n[values]\nnot_a_header = true\n'''\n[[extra.future]]\nvalue = 0xDEAD # as typed\n";
+fn raw_sections_and_the_caller_writer_survive_every_transaction() {
     for raw in [
-        template.to_owned(),
-        template.replace('\n', "\r\n"),
-        template.replace("# here\n", "# here\r\n"),
+        "# opaque\n[extra] # exact\nvalue = 0xDEAD\n",
+        "# opaque\r\n[extra] # exact\nvalue = 0xDEAD\r\n",
     ] {
         let dir = tempfile::tempdir().unwrap();
-        let lib = library(dir.path());
-        let file = dir.path().join("Opaque.toml");
+        let lib = Library::at(dir.path(), FACTORY, Opaque).unwrap();
         std::fs::write(
-            &file,
-            format!("name = 'Opaque'\n{raw}\n[values]\namount = 1\n"),
+            dir.path().join("Opaque.toml"),
+            format!("name = 'Opaque'\nunknown = 'removed'\n[values]\namount = 1\n{raw}"),
         )
         .unwrap();
-        lib.save("Opaque", vec![("amount".into(), 2.0)], None)
-            .unwrap();
-        assert!(std::fs::read_to_string(&file).unwrap().contains(&raw));
+        let mut parameters = lib.find("Opaque").unwrap().sound.parameters;
+        parameters.0[0].1 = 2.0;
+        lib.save("Opaque", parameters, None).unwrap();
         lib.rename("Opaque", "Renamed").unwrap();
         lib.favorite("Renamed", true).unwrap();
         lib.tag("Renamed", vec!["tag".into()]).unwrap();
         let text = std::fs::read_to_string(dir.path().join("Renamed.toml")).unwrap();
-        assert!(text.contains(&raw), "{text:?}");
-        assert_eq!(
-            lib.find("Renamed").unwrap().sound.parameters,
-            [("amount".to_owned(), 2.0)]
-        );
+        assert!(text.ends_with(raw), "{text:?}");
+        assert!(!text.contains("unknown"));
     }
+}
+
+#[test]
+fn metadata_rewrites_use_the_codec_and_discard_unrecognised_preset_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = library(dir.path());
+    std::fs::write(
+        dir.path().join("Own.toml"),
+        "name = 'Own'\nunknown = 'removed'\n[values]\namount = 1\n",
+    )
+    .unwrap();
+    lib.favorite("Own", true).unwrap();
+    let text = std::fs::read_to_string(dir.path().join("Own.toml")).unwrap();
+    assert!(!text.contains("unknown"));
+    assert!(!text.contains("description"));
+    assert_eq!(
+        std::fs::read_dir(dir.path()).unwrap().count(),
+        1,
+        "no new library lock file"
+    );
 }
 
 #[test]
@@ -691,4 +734,13 @@ fn unchanged_factory_marks_do_not_create_or_rewrite_an_overlay() {
     lib.favorite("Felt Bass", true).unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), time);
+}
+
+#[test]
+fn the_first_save_creates_a_missing_library_without_a_lock_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Presets");
+    let lib = library(&path);
+    lib.save("First", vec![], None).unwrap();
+    assert_eq!(std::fs::read_dir(path).unwrap().count(), 1);
 }

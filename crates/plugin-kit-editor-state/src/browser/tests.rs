@@ -332,7 +332,7 @@ fn scrolling_uses_the_callers_visible_rows_and_saturates() {
 }
 
 #[test]
-fn selection_stays_visible_through_insertions_and_tracks_a_name_not_a_row() {
+fn refresh_keeps_the_numeric_top_row_and_selection_tracks_its_name() {
     let mut b = browser();
     b.act(BrowserAction::Choose {
         row: 3,
@@ -344,7 +344,7 @@ fn selection_stays_visible_through_insertions_and_tracks_a_name_not_a_row() {
     b.refresh(all);
     assert_eq!(
         (b.current_name(), b.selected_row(), b.first()),
-        (Some("Pad B"), Some(4), 3)
+        (Some("Pad B"), Some(4), 2)
     );
     b.refresh(entries().into_iter().map(|mut e| {
         e.name = e.name.to_uppercase();
@@ -480,4 +480,30 @@ fn a_disappearing_favorite_request_does_not_cancel_another_presets_prompt() {
     assert!(b.pending().is_none());
     assert!(matches!(b.prompt(), Some(Prompt::Rename { preset, .. }) if preset.name == "Pad A"));
     assert!(b.complete(r.token, Ok(Completion::Changed)).is_empty());
+}
+
+#[test]
+fn missing_selected_chips_follow_present_sorted_tags() {
+    let mut b = BrowserState::new(2);
+    b.refresh([preset("One", Origin::User, false, &["apple", "zebra"])]);
+    b.toggle_tag("apple");
+    b.refresh([preset("Two", Origin::User, false, &["zebra"])]);
+    assert_eq!(
+        b.chips(),
+        &[("zebra".into(), false), ("apple".into(), true)]
+    );
+}
+
+#[test]
+fn the_released_row_bound_prompt_is_an_explicit_option() {
+    for row_bound in [false, true] {
+        let mut b = browser();
+        b.show(true);
+        b.set_current(Some("Pad B"));
+        b.set_prompts_require_visible_row(row_bound);
+        b.act(BrowserAction::Rename);
+        assert!(b.prompt().is_some());
+        b.set_search("no matching preset");
+        assert_eq!(b.prompt().is_none(), row_bound);
+    }
 }

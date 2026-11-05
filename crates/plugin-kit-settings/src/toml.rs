@@ -186,3 +186,49 @@ fn write_value(value: &Value, out: &mut String) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// Original header spans of an opaque root section, including comments and line endings.
+pub fn raw_section(text: &str, section: &str) -> Option<String> {
+    // Slice the original text by the parser's header spans. Formatting it again would
+    // normalise CRLF, including mixed line endings and newlines inside saved state.
+    fn table_headers(table: &toml_edit::Table, keep: bool, out: &mut Vec<(usize, bool)>) {
+        if !table.is_implicit()
+            && !table.is_dotted()
+            && let Some(span) = table.span()
+        {
+            let start = table
+                .decor()
+                .prefix()
+                .and_then(|p| p.span())
+                .map_or(span.start, |s| s.start);
+            out.push((start, keep));
+        }
+        for (_, child) in table.iter() {
+            headers(child, keep, out);
+        }
+    }
+    fn headers(item: &toml_edit::Item, keep: bool, out: &mut Vec<(usize, bool)>) {
+        if let Some(table) = item.as_table() {
+            table_headers(table, keep, out);
+        } else if let Some(array) = item.as_array_of_tables() {
+            for table in array.iter() {
+                table_headers(table, keep, out);
+            }
+        }
+    }
+    let doc = toml_edit::Document::parse(text).ok()?;
+    doc.get(section)?;
+    let mut starts = Vec::new();
+    for (key, item) in doc.iter() {
+        headers(item, key == section, &mut starts);
+    }
+    starts.sort_by_key(|(start, _)| *start);
+    starts.push((text.len(), false));
+    let mut raw = String::new();
+    for pair in starts.windows(2) {
+        if pair[0].1 {
+            raw.push_str(text.get(pair[0].0..pair[1].0)?);
+        }
+    }
+    (!raw.is_empty()).then_some(raw)
+}

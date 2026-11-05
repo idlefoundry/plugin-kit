@@ -200,3 +200,27 @@ fn tint_is_source_over_and_leaves_every_pixel_outside_the_clip_untouched() {
         }
     }
 }
+
+/// Golden f32 bits from the released CA-72 kernel: the radius lies on a rounding boundary.
+#[test]
+fn coverage_keeps_the_released_radius_rounding_and_box_pass_bits() {
+    let mut c = Coverage::new(17, 1).unwrap();
+    c.data_mut()[8] = 1.0;
+    c.blur(f32::from_bits(0x409f_32af)).unwrap();
+    assert_eq!(
+        c.data().iter().map(|f| f.to_bits()).collect::<Vec<_>>(),
+        [
+            932987534, 935780441, 938883670, 940910659, 942462275, 943858726, 944634534, 945100018,
+            945255180, 945100018, 944634534, 943858726, 942462275, 940910659, 938883670, 935780441,
+            932987536
+        ]
+    );
+}
+
+#[test]
+fn box_passes_keep_the_released_unclamped_round_off() {
+    let mut c = Coverage::new(29, 7).unwrap();
+    c.data_mut()[2 * 29 + 1] = 0.0001;
+    c.blur(1.0).unwrap();
+    assert_eq!(c.data()[5].to_bits(), 2838145707);
+}

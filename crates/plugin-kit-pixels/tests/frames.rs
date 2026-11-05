@@ -78,6 +78,36 @@ fn reference(dst: &mut Pixmap, src: &Pixmap, at: (i32, i32), clip: Rect, blend: 
     }
 }
 
+fn reference_sparse(dst: &mut Pixmap, src: &Pixmap, at: (i32, i32), clip: Rect) {
+    let w = dst.width() as usize;
+    for y in 0..dst.height() as i32 {
+        for x in 0..dst.width() as i32 {
+            let (sx, sy) = (
+                i64::from(x) - i64::from(at.0),
+                i64::from(y) - i64::from(at.1),
+            );
+            if !contains(clip, x, y)
+                || sx < 0
+                || sy < 0
+                || sx >= i64::from(src.width())
+                || sy >= i64::from(src.height())
+            {
+                continue;
+            }
+            let s = &src.data()[(sy as usize * src.width() as usize + sx as usize) * 4..][..4];
+            let d = &mut dst.data_mut()[(y as usize * w + x as usize) * 4..][..4];
+            for c in 0..4 {
+                d[c] = if s[3] > 0 {
+                    (u32::from(s[c]) + (u32::from(d[c]) * (255 - u32::from(s[3]))).div_ceil(256))
+                        as u8
+                } else {
+                    d[c]
+                };
+            }
+        }
+    }
+}
+
 #[test]
 fn rectangles_merge_transitively_and_keep_separate_places_separate() {
     let mut d = Damage::new();
@@ -91,6 +121,8 @@ fn rectangles_merge_transitively_and_keep_separate_places_separate() {
     ] {
         d.add(r);
     }
+    assert_eq!(d.rects().len(), 4);
+    d.merge(1, 8);
     assert_eq!(d.rects().len(), 2);
     assert!(d.rects().contains(&Rect::new(0, 0, 15, 5)));
     d.merge(30, 8);
@@ -148,7 +180,9 @@ fn sparse_dense_and_pixel_composition_agree_over_random_clipping() {
         over(&mut dense, &src, at, clip);
         sparse.over(&mut runs, at, clip);
         reference(&mut slow, &src, at, clip, true);
-        assert_eq!(runs, dense, "sparse {i}, {at:?}, {clip:?}");
+        let mut sparse_reference = initial.clone();
+        reference_sparse(&mut sparse_reference, &src, at, clip);
+        assert_eq!(runs, sparse_reference, "sparse {i}, {at:?}, {clip:?}");
         assert_eq!(dense, slow, "dense {i}, {at:?}, {clip:?}");
         copy(&mut copied, &src, at, clip);
         slow.clone_from(&initial);
@@ -188,7 +222,7 @@ fn compose(
                 if sparse {
                     Sparse::from_pixmap(&layer.image).over(frame, layer.at, clip);
                 } else {
-                    over(frame, &layer.image, layer.at, clip);
+                    reference_sparse(frame, &layer.image, layer.at, clip);
                 }
             }
         }
@@ -295,4 +329,41 @@ fn partial_presentation_requires_known_damage_a_complete_frame_and_age_one() {
     );
     assert_eq!(Damage::for_buffer(all, None, 1, true), Damage::full(all));
     assert!(Damage::for_buffer(all, Some(&Damage::new()), 1, true).is_empty());
+}
+
+#[test]
+fn damage_defers_merging_and_preserves_the_released_order_and_strict_gap() {
+    let rects = [
+        Rect::new(0, 0, 5, 5),
+        Rect::new(40, 0, 45, 5),
+        Rect::new(6, 0, 11, 5),
+        Rect::new(80, 0, 85, 5),
+    ];
+    let mut damage = Damage::new();
+    for r in rects {
+        damage.add(r);
+    }
+    assert_eq!(damage.rects(), &rects);
+    damage.merge(1, 8);
+    assert_eq!(damage.rects(), &rects);
+    damage.merge(2, 8);
+    assert_eq!(
+        damage.rects(),
+        &[Rect::new(0, 0, 11, 5), rects[1], rects[3]]
+    );
+    let mut eager = Damage::with_eager_merging(1);
+    for r in rects {
+        eager.add(r);
+    }
+    assert_eq!(eager.rects(), &[rects[1], Rect::new(0, 0, 11, 5), rects[3]]);
+}
+
+#[test]
+fn sparse_uses_the_released_pipeline_division() {
+    let mut source = Pixmap::new(1, 1).unwrap();
+    source.data_mut().copy_from_slice(&[1, 2, 0, 2]);
+    let mut target = Pixmap::new(1, 1).unwrap();
+    target.data_mut().copy_from_slice(&[64, 64, 64, 255]);
+    Sparse::new(source).over(&mut target, (0, 0), Rect::new(0, 0, 1, 1));
+    assert_eq!(target.data(), &[65, 66, 64, 255]);
 }

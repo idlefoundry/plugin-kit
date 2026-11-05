@@ -1,7 +1,7 @@
 //! The factory's tags, favourites and hidden sounds live only in factory.toml.
 
 use crate::{Item, Library, PresetCodec, Table, TableLike, same, value};
-use plugin_kit_settings::{check_format, encode, read, write_atomic};
+use plugin_kit_settings::{check_format, read, write_atomic};
 
 pub(crate) fn marks<'a>(overlay: &'a Table, name: &str) -> Option<&'a dyn TableLike> {
     let presets = overlay.get("presets")?.as_table_like()?;
@@ -27,7 +27,10 @@ pub(crate) fn change_marks(
         .or_else(|| presets.iter().find(|(key, _)| same(key, name)))
         .map(|(key, _)| key.to_owned())
         .unwrap_or_else(|| name.to_owned());
-    if presets.get(&key).is_none() {
+    if presets
+        .get(&key)
+        .is_none_or(|m| m.as_table_like().is_none())
+    {
         presets.insert(&key, Item::Table(Table::new()));
     }
     let marks = presets
@@ -63,7 +66,15 @@ impl<C: PresetCodec> Library<C> {
         change: impl FnOnce(&mut dyn TableLike) -> Result<(), String>,
     ) -> Result<(), String> {
         let mut table = self.overlay()?;
-        let before = encode(&table)?;
+        let before = table
+            .get("presets")
+            .map(|p| {
+                let mut t = Table::new();
+                t.insert("presets", p.clone());
+                self.codec.encode_table(&t)
+            })
+            .transpose()?
+            .unwrap_or_default();
         let had_presets = table.get("presets").is_some();
         if !had_presets {
             table.insert("presets", Item::Table(Table::new()));
@@ -84,11 +95,29 @@ impl<C: PresetCodec> Library<C> {
         if !had_presets && presets.is_empty() {
             table.remove("presets");
         }
-        if encode(&table)? == before {
+        let after = table
+            .get("presets")
+            .map(|p| {
+                let mut t = Table::new();
+                t.insert("presets", p.clone());
+                self.codec.encode_table(&t)
+            })
+            .transpose()?
+            .unwrap_or_default();
+        if after == before
+            || (!had_presets
+                && table
+                    .get("presets")
+                    .and_then(Item::as_table_like)
+                    .is_none_or(|t| t.is_empty()))
+        {
             return Ok(());
         }
         table.insert("format", value(crate::FORMAT));
-        write_atomic(&self.dir.join("factory.toml"), &encode(&table)?)?;
+        write_atomic(
+            &self.dir.join("factory.toml"),
+            &self.codec.encode_table(&table)?,
+        )?;
         self.forget();
         Ok(())
     }

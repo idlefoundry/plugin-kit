@@ -42,6 +42,9 @@ impl Coverage {
     pub fn data(&self) -> &[f32] {
         &self.data
     }
+    pub fn data_mut(&mut self) -> &mut [f32] {
+        &mut self.data
+    }
     pub fn clear(&mut self) {
         self.data.fill(0.0);
     }
@@ -114,10 +117,10 @@ impl Coverage {
         if sigma < 0.3 {
             return Ok(());
         }
-        let radius = (((4.0 * f64::from(sigma).powi(2) + 1.0).sqrt() - 1.0) / 2.0)
+        let radius = (((12.0 * sigma * sigma / 3.0 + 1.0).sqrt() - 1.0) / 2.0)
             .round()
             .max(1.0);
-        if radius > f64::from(i32::MAX) {
+        if radius >= i32::MAX as f32 {
             return Err("the blur radius is too large");
         }
         let radius = radius as usize;
@@ -219,7 +222,7 @@ fn box_pass(from: &[f32], to: &mut [f32], w: usize, h: usize, r: usize, across: 
         // Visit the mask's pixels, never an arbitrarily wide off-mask margin.
         let mut sum: f32 = (0..=r.min(n - 1)).map(|i| from[base + i * step]).sum();
         for i in 0..n {
-            to[base + i * step] = (sum * k).clamp(0.0, 1.0);
+            to[base + i * step] = sum * k;
             sum += at(i as i64 + r as i64 + 1) - at(i as i64 - r as i64);
         }
     }

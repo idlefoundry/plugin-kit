@@ -62,7 +62,8 @@ fn the_settings_are_kept_and_a_bad_file_left_alone() {
         settings.read().unwrap().unwrap()["indicator"].as_bool(),
         Some(false)
     );
-    for text in ["not [ toml", "format = 2\nfuture = true", "format = 'one'"] {
+    {
+        let text = "not [ toml";
         std::fs::write(settings.path(), text).unwrap();
         assert!(settings.read().is_err());
         assert!(
@@ -240,4 +241,47 @@ fn preserving_a_section_does_not_lose_its_earlier_dotted_assignments() {
     let result = parse(&text).unwrap();
     assert_eq!(result["extra"]["earlier"].as_integer(), Some(42));
     assert_eq!(result["extra"]["nested"]["value"].as_str(), Some("kept"));
+}
+
+#[test]
+fn future_settings_are_read_and_rewritten_with_unknown_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let settings = Settings::at(dir.path().join("settings.toml"));
+    for format in ["99", "'future'"] {
+        std::fs::write(
+            settings.path(),
+            format!("format = {format}\nunknown = 'kept'\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            settings.read().unwrap().unwrap()["unknown"].as_str(),
+            Some("kept")
+        );
+        settings
+            .change(|t| {
+                t.insert("width", value(1200));
+                Ok(())
+            })
+            .unwrap();
+        let t = settings.read().unwrap().unwrap();
+        assert_eq!(t["format"].as_integer(), Some(1));
+        assert_eq!(t["unknown"].as_str(), Some("kept"));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn replacements_use_normal_creation_permissions_and_write_only_locks_work() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let normal = dir.path().join("normal");
+    let file = dir.path().join("settings.toml");
+    std::fs::write(&normal, "").unwrap();
+    write_atomic(&file, "first = true\n").unwrap();
+    let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&file), mode(&normal));
+    let lockfile = dir.path().join("settings.toml.lock");
+    std::fs::write(&lockfile, "").unwrap();
+    std::fs::set_permissions(&lockfile, std::fs::Permissions::from_mode(0o200)).unwrap();
+    drop(lock(&lockfile).unwrap());
 }

@@ -8,9 +8,9 @@
 //! with the caller's player controls omitted on save. Hand-written values still
 //! read as written. Parameter application and host gestures belong to the caller.
 //!
-//! Files are replaced whole; library mutations take a directory lock across
-//! instances and processes. Bad files are reported and left alone. All file I/O
-//! belongs off the audio thread.
+//! Files are replaced whole; same-process mutations are serialised without an
+//! extra library file, as in the released products. Bad files are reported and left alone.
+//! All file I/O belongs off the audio thread.
 
 mod names;
 mod overlay;
@@ -23,9 +23,7 @@ use std::time::SystemTime;
 
 pub use names::{check_name, parse_tags};
 pub use plugin_kit_settings::{Array, Item, Table, TableLike, Value, value};
-use plugin_kit_settings::{
-    check_format, encode, encode_preserving, lock, parse, plugin_dir, write_atomic,
-};
+use plugin_kit_settings::{check_format, encode, parse, plugin_dir, write_atomic};
 
 pub const FORMAT: i64 = plugin_kit_settings::FORMAT;
 
@@ -37,6 +35,29 @@ pub trait PresetCodec: Clone + Debug {
 
     fn read(&self, preset: &Table, factory_defaults: &Table) -> Result<Self::Parameters, String>;
     fn write(&self, parameters: &Self::Parameters, preset: &mut Table) -> Result<(), String>;
+    /// Original user-file bytes for opaque sections (CA-72 R-FX-PRESETS).
+    fn read_source(
+        &self,
+        preset: &Table,
+        defaults: &Table,
+        _source: Option<&str>,
+    ) -> Result<Self::Parameters, String> {
+        self.read(preset, defaults)
+    }
+    /// Capture policy is separate from rewriting a hand-written preset's values.
+    fn prepare_save(&self, _parameters: &mut Self::Parameters) {}
+    /// The caller owns its writer version, spelling and opaque sections.
+    fn encode_preset(
+        &self,
+        preset: &Table,
+        _parameters: &Self::Parameters,
+    ) -> Result<String, String> {
+        self.encode_table(preset)
+    }
+    /// Also used for the factory overlay, whose unknown values are retained.
+    fn encode_table(&self, table: &Table) -> Result<String, String> {
+        encode(table)
+    }
 }
 
 /// Plain parameter values, as in the CA-72's R10. The caller lists the player's
@@ -68,12 +89,13 @@ impl PresetCodec for PlainValues {
             .collect()
     }
 
+    fn prepare_save(&self, parameters: &mut Self::Parameters) {
+        parameters.retain(|(id, _)| !self.kept_on_save.contains(id));
+    }
+
     fn write(&self, parameters: &Self::Parameters, preset: &mut Table) -> Result<(), String> {
         let mut values = Table::new();
         for (id, number) in parameters {
-            if self.kept_on_save.contains(id) {
-                continue;
-            }
             if !number.is_finite() {
                 return Err(format!("`{id}` is not a finite number"));
             }
@@ -111,8 +133,6 @@ pub struct Entry<P> {
     pub origin: Origin,
     pub replaces: Option<String>,
     file: Option<PathBuf>,
-    table: Table,
-    source: Option<String>,
 }
 
 impl<P> Entry<P> {
@@ -133,6 +153,7 @@ fn sound_of<C: PresetCodec>(
     table: &Table,
     defaults: &Table,
     codec: &C,
+    source: Option<&str>,
 ) -> Result<Sound<C::Parameters>, String> {
     let name = table
         .get("name")
@@ -160,7 +181,7 @@ fn sound_of<C: PresetCodec>(
             .unwrap_or_default()
             .to_owned(),
         tags,
-        parameters: codec.read(table, defaults)?,
+        parameters: codec.read_source(table, defaults, source)?,
     })
 }
 
@@ -188,7 +209,7 @@ fn factory_entries<C: PresetCodec>(
         Some(_) => return Err("`preset` is a list of tables".into()),
     };
     for table in tables {
-        let sound = sound_of(&table, &root, codec)?;
+        let sound = sound_of(&table, &root, codec, None)?;
         if entries.iter().any(|e| same(&e.sound.name, &sound.name)) {
             return Err(format!("A second factory preset {}", sound.name));
         }
@@ -198,8 +219,6 @@ fn factory_entries<C: PresetCodec>(
             origin: Origin::Factory,
             replaces: None,
             file: None,
-            table,
-            source: None,
         });
     }
     Ok(entries)
@@ -215,11 +234,13 @@ pub fn parse_factory<C: PresetCodec>(
         .collect())
 }
 
+pub use plugin_kit_settings::raw_section;
+
 /// A user file read on its own, without searching a directory or applying overlays.
 pub fn parse_user<C: PresetCodec>(text: &str, codec: &C) -> Result<Sound<C::Parameters>, String> {
     let table = parse(text)?;
     check_format(&table)?;
-    sound_of(&table, &Table::new(), codec)
+    sound_of(&table, &Table::new(), codec, Some(text))
 }
 
 type Seen = Vec<(OsString, u64, Option<SystemTime>)>;
@@ -259,10 +280,11 @@ impl<C: PresetCodec> Library<C> {
         }
     }
 
-    fn transaction(&self) -> Result<std::fs::File, String> {
-        let guard = lock(&self.dir.join(".library.lock"))?;
+    fn transaction(&self) -> std::sync::MutexGuard<'static, ()> {
+        static TRANSACTIONS: Mutex<()> = Mutex::new(());
+        let guard = TRANSACTIONS.lock().unwrap_or_else(|e| e.into_inner());
         self.forget();
-        Ok(guard)
+        guard
     }
 
     fn files(&self) -> Result<Vec<PathBuf>, String> {
@@ -344,7 +366,7 @@ impl<C: PresetCodec> Library<C> {
                 let source = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
                 let table = parse(&source)?;
                 check_format(&table)?;
-                let sound = sound_of(&table, &Table::new(), &self.codec)?;
+                let sound = sound_of(&table, &Table::new(), &self.codec, Some(&source))?;
                 if users.iter().any(|e| same(&e.sound.name, &sound.name)) {
                     return Err(format!("A second preset {}", sound.name));
                 }
@@ -368,9 +390,7 @@ impl<C: PresetCodec> Library<C> {
                     },
                     replaces,
                     sound,
-                    table,
                     file: Some(file.clone()),
-                    source: Some(source),
                 })
             };
             match read() {
@@ -442,8 +462,14 @@ impl<C: PresetCodec> Library<C> {
     /// case on every system. An existing sound otherwise stays in its own file.
     fn place(&self, name: &str, own: Option<&Path>) -> Result<PathBuf, String> {
         let preferred = self.dir.join(format!("{name}.toml"));
-        let occupied = std::fs::read_dir(&self.dir)
-            .map_err(|e| e.to_string())?
+        let directory = match std::fs::read_dir(&self.dir) {
+            Ok(directory) => Some(directory),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e.to_string()),
+        };
+        let occupied = directory
+            .into_iter()
+            .flatten()
             .map(|entry| entry.map(|e| e.path()).map_err(|e| e.to_string()))
             .collect::<Result<Vec<_>, _>>()?
             .iter()
@@ -459,19 +485,25 @@ impl<C: PresetCodec> Library<C> {
                 .map(Path::to_path_buf)
                 .ok_or_else(|| format!("There is already a file for {name}"));
         }
+        if let Some(own) = own.filter(|own| *own != preferred) {
+            match std::fs::rename(own, &preferred) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(format!("{}: {e}", preferred.display()));
+                }
+                _ => self.forget(),
+            }
+        }
         Ok(preferred)
     }
 
-    fn put(
-        &self,
-        entry: &Entry<C::Parameters>,
-        file: &Path,
-        old_file: Option<&Path>,
-    ) -> Result<(), String> {
-        let mut table = entry.table.clone();
+    fn put(&self, entry: &Entry<C::Parameters>, file: &Path) -> Result<(), String> {
+        let mut table = Table::new();
+        self.codec.write(&entry.sound.parameters, &mut table)?;
         table.insert("format", value(FORMAT));
         table.insert("name", value(entry.sound.name.as_str()));
-        table.insert("description", value(entry.sound.description.as_str()));
+        if !entry.sound.description.is_empty() {
+            table.insert("description", value(entry.sound.description.as_str()));
+        }
         table.insert("tags", strings(&entry.sound.tags));
         table.insert("favorite", value(entry.favorite));
         if let Some(replaces) = &entry.replaces {
@@ -479,21 +511,31 @@ impl<C: PresetCodec> Library<C> {
         } else {
             table.remove("replaces");
         }
-        let text = match &entry.source {
-            Some(source) => encode_preserving(&table, source)?,
-            None => encode(&table)?,
-        };
-        // Validate the codec's result before replacing an existing file.
-        parse_user(&text, &self.codec)?;
+        let text = self.codec.encode_preset(&table, &entry.sound.parameters)?;
+        // The writer may append opaque data; reject malformed TOML before replacement.
+        parse(&text)?;
         write_atomic(file, &text)?;
         self.forget();
-        if let Some(old) = old_file.filter(|old| *old != file) {
-            // A case-only change may already have replaced the same filesystem entry.
-            if old.exists() && !same_file_name(old, file)? {
-                std::fs::remove_file(old).map_err(|e| e.to_string())?;
-            }
-        }
         Ok(())
+    }
+
+    /// Write an imported sound to the caller's chosen file, using the same codec and writer.
+    pub fn write_sound(
+        &self,
+        file: &Path,
+        sound: Sound<C::Parameters>,
+        favorite: bool,
+        replaces: Option<String>,
+    ) -> Result<(), String> {
+        check_name(&sound.name)?;
+        let entry = Entry {
+            sound,
+            favorite,
+            origin: Origin::User,
+            replaces,
+            file: None,
+        };
+        self.put(&entry, file)
     }
 
     /// Save the current sound, keeping the existing description, tags (unless
@@ -501,30 +543,27 @@ impl<C: PresetCodec> Library<C> {
     pub fn save(
         &self,
         name: &str,
-        parameters: C::Parameters,
+        mut parameters: C::Parameters,
         tags: Option<Vec<String>>,
     ) -> Result<Entry<C::Parameters>, String> {
         let name = name.trim();
         check_name(name)?;
-        let _guard = self.transaction()?;
+        let _guard = self.transaction();
+        self.codec.prepare_save(&mut parameters);
         let existing = self.find(name);
         let factory = self.factory.iter().find(|e| same(&e.sound.name, name));
-        let mut entry = existing
-            .or_else(|| factory.cloned())
-            .unwrap_or_else(|| Entry {
-                sound: Sound {
-                    name: name.to_owned(),
-                    description: String::new(),
-                    tags: Vec::new(),
-                    parameters: parameters.clone(),
-                },
-                favorite: false,
-                origin: Origin::User,
-                replaces: None,
-                file: None,
-                table: Table::new(),
-                source: None,
-            });
+        let mut entry = existing.unwrap_or_else(|| Entry {
+            sound: Sound {
+                name: name.to_owned(),
+                description: String::new(),
+                tags: Vec::new(),
+                parameters: parameters.clone(),
+            },
+            favorite: false,
+            origin: Origin::User,
+            replaces: None,
+            file: None,
+        });
         entry.replaces = entry
             .replaces
             .or_else(|| factory.map(|e| e.sound.name.clone()));
@@ -533,10 +572,8 @@ impl<C: PresetCodec> Library<C> {
         if let Some(tags) = tags {
             entry.sound.tags = tags;
         }
-        self.codec
-            .write(&entry.sound.parameters, &mut entry.table)?;
         let file = self.place(name, entry.file())?;
-        self.put(&entry, &file, entry.file())?;
+        self.put(&entry, &file)?;
         self.find(name)
             .ok_or_else(|| format!("{name} was not saved"))
     }
@@ -544,7 +581,7 @@ impl<C: PresetCodec> Library<C> {
     pub fn rename(&self, name: &str, to: &str) -> Result<Entry<C::Parameters>, String> {
         let to = to.trim();
         check_name(to)?;
-        let _guard = self.transaction()?;
+        let _guard = self.transaction();
         let mut entry = self.find(name).ok_or_else(|| format!("No preset {name}"))?;
         if self
             .entries()
@@ -556,14 +593,10 @@ impl<C: PresetCodec> Library<C> {
         }
         if entry.origin == Origin::Factory {
             entry.replaces = Some(entry.sound.name.clone());
-            // Factory defaults can be inherited from the factory file's root.
-            // A standalone user file must spell them out through its codec.
-            self.codec
-                .write(&entry.sound.parameters, &mut entry.table)?;
         }
         entry.sound.name = to.to_owned();
         let file = self.place(to, entry.file())?;
-        self.put(&entry, &file, entry.file())?;
+        self.put(&entry, &file)?;
         self.find(to).ok_or_else(|| format!("{to} was not saved"))
     }
 
@@ -573,7 +606,7 @@ impl<C: PresetCodec> Library<C> {
         tags: Option<Vec<String>>,
         favorite: Option<bool>,
     ) -> Result<(), String> {
-        let _guard = self.transaction()?;
+        let _guard = self.transaction();
         let mut entry = self.find(name).ok_or_else(|| format!("No preset {name}"))?;
         if let Some(file) = entry.file.clone() {
             if let Some(tags) = tags {
@@ -582,7 +615,7 @@ impl<C: PresetCodec> Library<C> {
             if let Some(favorite) = favorite {
                 entry.favorite = favorite;
             }
-            self.put(&entry, &file, Some(&file))
+            self.put(&entry, &file)
         } else {
             self.change_overlay(|presets| {
                 overlay::change_marks(presets, &entry.sound.name, |marks| {
@@ -609,7 +642,7 @@ impl<C: PresetCodec> Library<C> {
     /// Hide a factory sound, or its edited version, before deleting any user file.
     /// An unreadable overlay therefore leaves the user version intact too (R18).
     pub fn remove(&self, name: &str) -> Result<(), String> {
-        let _guard = self.transaction()?;
+        let _guard = self.transaction();
         let entry = self.find(name).ok_or_else(|| format!("No preset {name}"))?;
         let hide = if entry.origin == Origin::Factory {
             Some(&entry.sound.name)
@@ -631,7 +664,7 @@ impl<C: PresetCodec> Library<C> {
     }
 
     pub fn revert(&self, name: &str) -> Result<String, String> {
-        let _guard = self.transaction()?;
+        let _guard = self.transaction();
         let entry = self.find(name).ok_or_else(|| format!("No preset {name}"))?;
         let (Some(file), Some(factory)) = (entry.file(), entry.replaces.as_ref()) else {
             return Err(format!("{name} is not an edited factory preset"));
@@ -647,7 +680,7 @@ impl<C: PresetCodec> Library<C> {
     }
 
     pub fn restore(&self) -> Result<Vec<String>, String> {
-        let _guard = self.transaction()?;
+        let _guard = self.transaction();
         let mut restored = Vec::new();
         self.change_overlay(|presets| {
             for (name, item) in presets.iter_mut() {
@@ -669,20 +702,6 @@ impl<C: PresetCodec> Library<C> {
         self.forget();
         Ok(())
     }
-}
-
-// After a case-only replacement on a case-insensitive filesystem the directory
-// contains only the destination spelling. On a case-sensitive one both remain.
-fn same_file_name(old: &Path, new: &Path) -> Result<bool, String> {
-    let directory = old.parent().ok_or("A preset needs a parent directory")?;
-    let mut old_spelling = false;
-    let mut new_spelling = false;
-    for entry in std::fs::read_dir(directory).map_err(|e| e.to_string())? {
-        let name = entry.map_err(|e| e.to_string())?.file_name();
-        old_spelling |= Some(name.as_os_str()) == old.file_name();
-        new_spelling |= Some(name.as_os_str()) == new.file_name();
-    }
-    Ok(!(old_spelling && new_spelling))
 }
 
 pub fn matching<P: Clone>(

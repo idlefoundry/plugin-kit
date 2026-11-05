@@ -66,23 +66,32 @@ impl Rect {
 
     fn near(self, other: Self, gap: u32) -> bool {
         let gap = i64::from(gap);
-        i64::from(self.left) <= i64::from(other.right) + gap
-            && i64::from(other.left) <= i64::from(self.right) + gap
-            && i64::from(self.top) <= i64::from(other.bottom) + gap
-            && i64::from(other.top) <= i64::from(self.bottom) + gap
+        i64::from(self.left) < i64::from(other.right) + gap
+            && i64::from(other.left) < i64::from(self.right) + gap
+            && i64::from(self.top) < i64::from(other.bottom) + gap
+            && i64::from(other.top) < i64::from(self.bottom) + gap
     }
 }
 
-/// Separate changes, with overlapping or touching rectangles joined. The bounding boxes may
-/// include unchanged pixels, which must also be rebuilt. No pixel belongs to two rectangles.
+/// Changes kept in insertion order until `merge`, as in the CA-72. The CA-74 can
+/// request eager, inclusive merging with its own gap.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Damage {
     rects: Vec<Rect>,
+    eager_gap: Option<u32>,
 }
 
 impl Damage {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// CA-74 R-FRAMES: merge each incoming footprint and append its union last.
+    pub fn with_eager_merging(gap: u32) -> Self {
+        Self {
+            eager_gap: Some(gap),
+            ..Self::default()
+        }
     }
 
     pub fn full(bounds: Rect) -> Self {
@@ -103,8 +112,25 @@ impl Damage {
 
     pub fn add(&mut self, rect: Rect) {
         if !rect.is_empty() {
+            let mut rect = rect;
+            if let Some(gap) = self.eager_gap {
+                let mut i = 0;
+                while i < self.rects.len() {
+                    let a = self.rects[i];
+                    let g = i64::from(gap);
+                    if i64::from(a.left) <= i64::from(rect.right) + g
+                        && i64::from(rect.left) <= i64::from(a.right) + g
+                        && i64::from(a.top) <= i64::from(rect.bottom) + g
+                        && i64::from(rect.top) <= i64::from(a.bottom) + g
+                    {
+                        rect = rect.union(self.rects.swap_remove(i));
+                        i = 0;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
             self.rects.push(rect);
-            self.join(0);
         }
     }
 
@@ -117,7 +143,10 @@ impl Damage {
     }
 
     pub fn clipped(&self, bounds: Rect) -> Self {
-        let mut d = Self::new();
+        let mut d = Self {
+            eager_gap: self.eager_gap,
+            ..Self::default()
+        };
         for &r in &self.rects {
             d.add_clipped(r, bounds);
         }

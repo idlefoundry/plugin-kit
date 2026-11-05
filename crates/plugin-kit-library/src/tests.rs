@@ -744,3 +744,15 @@ fn the_first_save_creates_a_missing_library_without_a_lock_file() {
     lib.save("First", vec![], None).unwrap();
     assert_eq!(std::fs::read_dir(path).unwrap().count(), 1);
 }
+
+#[test]
+fn separate_directories_share_the_factory_but_never_the_read_cache() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = library(&dir.path().join("a"));
+    let b = a.in_directory(dir.path().join("b"));
+    a.save("One", vec![], None).unwrap();
+    b.save("Two", vec![], None).unwrap();
+    assert!(a.find("One").is_some() && a.find("Two").is_none());
+    assert!(b.find("Two").is_some() && b.find("One").is_none());
+    assert_eq!(a.factory.as_ptr(), b.factory.as_ptr());
+}

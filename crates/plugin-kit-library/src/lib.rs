@@ -266,6 +266,16 @@ impl<C: PresetCodec> Library<C> {
         })
     }
 
+    /// A separate directory and read cache sharing the same immutable factory set and codec.
+    pub fn in_directory(&self, dir: impl Into<PathBuf>) -> Self {
+        Self {
+            dir: dir.into(),
+            factory: self.factory.clone(),
+            codec: self.codec.clone(),
+            last: Arc::default(),
+        }
+    }
+
     pub fn shared(name: &str, factory: &str, codec: C) -> Result<Self, String> {
         Self::at(plugin_dir(name)?.join("Presets"), factory, codec)
     }

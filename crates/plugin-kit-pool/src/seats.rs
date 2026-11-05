@@ -65,30 +65,22 @@ pub fn user_dir() -> Option<PathBuf> {
     Some(std::env::temp_dir().join("Idle Foundry seats 1"))
 }
 
-/// The user this process runs as: Linux's from `/proc/self/status` (its effective id), macOS's
-/// as the owner of its own temporary folder.
+/// The user this process runs as: its effective id.
 #[cfg(unix)]
+#[allow(unsafe_code)]
 fn uid() -> Option<u32> {
-    #[cfg(target_os = "linux")]
-    {
-        let status = std::fs::read_to_string("/proc/self/status").ok()?;
-        let line = status.lines().find(|l| l.starts_with("Uid:"))?;
-        line.split_whitespace().nth(2)?.parse().ok()
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        use std::os::unix::fs::MetadataExt;
-        std::fs::metadata(std::env::temp_dir())
-            .ok()
-            .map(|m| m.uid())
-    }
+    // SAFETY: `geteuid` takes nothing and cannot fail.
+    Some(unsafe { libc::geteuid() })
 }
 
-/// The seats' files, opened once, and which of them this process holds.
+/// The seats' folder and the seats this process holds. Only a held seat's file is kept open
+/// (its lock is the open file's); the others are opened, tried and closed at each look, so
+/// that a process holds a file open for each instance holding workers, not one for each of
+/// [`SEATS`] (on macOS a process's soft limit of open files is 256, and a host holds many).
 #[derive(Debug)]
 pub struct SeatFiles {
-    files: Vec<File>,
-    mine: Mutex<u64>,
+    dir: PathBuf,
+    mine: Mutex<Vec<(usize, File)>>,
 }
 
 impl SeatFiles {
@@ -105,86 +97,98 @@ impl SeatFiles {
         make.create(dir).ok()?;
         #[cfg(unix)]
         {
-            // (Another user's folder in a shared /tmp is not ours to count by.)
+            // (Another user's folder in a shared /tmp is not ours to count by, nor is a link
+            // put there in its place.)
             use std::os::unix::fs::MetadataExt;
-            if Some(std::fs::metadata(dir).ok()?.uid()) != uid() {
+            let m = std::fs::symlink_metadata(dir).ok()?;
+            if !m.is_dir() || Some(m.uid()) != uid() {
                 return None;
             }
         }
-        let files = (0..SEATS)
-            .map(|k| {
-                OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create(true)
-                    .truncate(false)
-                    .open(dir.join(format!("seat-{k:02}")))
-            })
-            .collect::<std::io::Result<Vec<File>>>()
-            .ok()?;
         Some(SeatFiles {
-            files,
-            mine: Mutex::new(0),
+            dir: dir.to_owned(),
+            mine: Mutex::new(Vec::new()),
         })
     }
 
-    fn mine(&self) -> std::sync::MutexGuard<'_, u64> {
+    fn mine(&self) -> std::sync::MutexGuard<'_, Vec<(usize, File)>> {
         self.mine
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Seat `k`'s file, opened (made, with `make`).
+    fn file(&self, k: usize, make: bool) -> std::io::Result<File> {
+        count(1);
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(make)
+            .truncate(false)
+            .open(self.dir.join(format!("seat-{k:02}")))
+    }
+
     /// A free seat taken, its number; None if every one is held.
     pub fn take(&self) -> Option<usize> {
         let mut mine = self.mine();
-        for (k, f) in self.files.iter().enumerate() {
-            if *mine & (1 << k) != 0 {
+        for k in 0..SEATS {
+            if mine.iter().any(|&(j, _)| j == k) {
                 continue;
             }
+            let Ok(f) = self.file(k, true) else {
+                continue;
+            };
             count(1);
             if f.try_lock().is_ok() {
-                *mine |= 1 << k;
+                mine.push((k, f));
                 return Some(k);
             }
         }
         None
     }
 
-    /// Seat `k`, this process's, let go.
+    /// Seat `k`, this process's, let go (its file closed).
     pub fn give_back(&self, k: usize) {
         let mut mine = self.mine();
-        if *mine & (1 << k) != 0 {
+        if let Some(at) = mine.iter().position(|&(j, _)| j == k) {
+            let (_, f) = mine.remove(at);
             count(1);
-            let _ = self.files[k].unlock();
-            *mine &= !(1 << k);
+            let _ = f.unlock();
         }
     }
 
     /// The seats this process holds.
     pub fn held_here(&self) -> u64 {
-        *self.mine()
+        self.mine().iter().fold(0, |m, &(k, _)| m | (1 << k))
     }
 
-    /// The seats other processes hold: each one tried and let go at once if it was free; the
-    /// look made twice and only seats held both times counted (another process's look holds
-    /// a seat for microseconds).
+    /// The seats other processes hold: each one opened, tried, let go at once if it was free,
+    /// and closed; the look made twice and only seats held both times counted (another
+    /// process's look holds a seat for microseconds).
     pub fn others(&self) -> u64 {
         let mine = self.mine();
+        let ours = mine.iter().fold(0u64, |m, &(k, _)| m | (1 << k));
         let look = || {
             let mut held = 0u64;
-            for (k, f) in self.files.iter().enumerate() {
-                if *mine & (1 << k) != 0 {
-                    continue;
-                }
-                count(1);
-                match f.try_lock() {
-                    Ok(()) => {
+            for k in (0..SEATS).filter(|k| ours & (1 << k) == 0) {
+                match self.file(k, false) {
+                    // (A seat never made is no one's.)
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(_) => held |= 1 << k,
+                    Ok(f) => {
                         count(1);
-                        let _ = f.unlock();
+                        match f.try_lock() {
+                            Ok(()) => {
+                                count(1);
+                                let _ = f.unlock();
+                            }
+                            // (A seat that cannot be tried counts as held: a share may then
+                            // be smaller, never larger, than it should.)
+                            Err(TryLockError::WouldBlock | TryLockError::Error(_)) => {
+                                held |= 1 << k
+                            }
+                        }
                     }
-                    // (A seat that cannot be tried counts as held: a share may then be
-                    // smaller, never larger, than it should.)
-                    Err(TryLockError::WouldBlock | TryLockError::Error(_)) => held |= 1 << k,
                 }
             }
             held
@@ -306,6 +310,32 @@ pub(crate) mod tests {
         assert_others_released(&b);
         release.join().unwrap();
         assert_eq!(held_before_exec, 1 << k, "child did not inherit the seat");
+    }
+
+    /// Only the seats this process holds are kept open: none before it takes one, one for each
+    /// it holds, none once all are given back (a look at the others opens and closes theirs).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn only_the_seats_held_are_kept_open() {
+        let dir = tempfile::tempdir().unwrap();
+        // (This folder's files open in the process: other tests open files meanwhile.)
+        let fds = || {
+            std::fs::read_dir("/proc/self/fd")
+                .unwrap()
+                .filter_map(|e| std::fs::read_link(e.ok()?.path()).ok())
+                .filter(|p| p.starts_with(dir.path()))
+                .count()
+        };
+        let seats = SeatFiles::open(dir.path()).unwrap();
+        let other = SeatFiles::open(dir.path()).unwrap();
+        let theirs = other.take().unwrap();
+        let before = fds();
+        let (a, b) = (seats.take().unwrap(), seats.take().unwrap());
+        assert_eq!(seats.others(), 1 << theirs);
+        assert_eq!(fds(), before + 2, "more files open than seats held");
+        seats.give_back(a);
+        seats.give_back(b);
+        assert_eq!(fds(), before, "a seat's file kept open once given back");
     }
 
     /// What a child process does for the tests: takes `PLUGIN_KIT_HOLD_SEATS` seats in

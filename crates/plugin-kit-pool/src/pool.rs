@@ -656,7 +656,8 @@ fn work<V: Play>(b: &Board<V>, period: Option<Duration>, driver: bool) {
 }
 
 /// How a worker is made an audio thread: `plugin_kit_rt::promote`, but on Windows time-critical
-/// priority (15) outside MMCSS, below a host's own audio and engine threads (MMCSS's "Pro Audio",
+/// priority (15; in a host of the real-time class, 22: `priority::relative_for`) outside
+/// MMCSS, below a host's own audio and engine threads (MMCSS's "Pro Audio",
 /// 24 to 26 in Cubase). In MMCSS at 26 the workers took the processor from Cubase's engine
 /// threads, pinned to the same performance cores, and its blocks ended late (the MC-79's R30);
 /// with four instances at UNISON 4 the dropouts went from 0 to 2 a run in MMCSS to none at 15
@@ -668,17 +669,46 @@ mod priority {
     pub(super) fn promote(period: Duration) {
         #[cfg(windows)]
         if !windows::mmcss() {
-            windows::time_critical();
+            windows::below_host();
             return;
         }
         let _ = plugin_kit_rt::promote(period, period / 2);
+    }
+
+    /// Windows' `REALTIME_PRIORITY_CLASS`, and the relative priorities used.
+    #[cfg(any(windows, test))]
+    const REALTIME_CLASS: u32 = 0x100;
+    #[cfg(any(windows, test))]
+    const TIME_CRITICAL: i32 = 15;
+    #[cfg(any(windows, test))]
+    const LOWEST: i32 = -2;
+
+    /// The workers' relative priority in a process of priority class `class`: time-critical
+    /// (15, below MMCSS's 16 to 31, where hosts' audio threads are); but in a host whose
+    /// process is in the real-time class time-critical is 31, above every thread of the host's,
+    /// so there the lowest (22: the class's base of 24 less two, below the host's own threads
+    /// at 24 and up).
+    #[cfg(any(windows, test))]
+    pub(super) fn relative_for(class: u32) -> i32 {
+        if class == REALTIME_CLASS {
+            LOWEST
+        } else {
+            TIME_CRITICAL
+        }
     }
 
     #[cfg(windows)]
     #[allow(unsafe_code)]
     mod windows {
         use windows_sys::Win32::System::Threading::{
-            GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
+            GetCurrentProcess, GetCurrentThread, GetPriorityClass, REALTIME_PRIORITY_CLASS,
+            SetThreadPriority, THREAD_PRIORITY_LOWEST, THREAD_PRIORITY_TIME_CRITICAL,
+        };
+
+        const _: () = {
+            assert!(REALTIME_PRIORITY_CLASS == super::REALTIME_CLASS);
+            assert!(THREAD_PRIORITY_TIME_CRITICAL == super::TIME_CRITICAL);
+            assert!(THREAD_PRIORITY_LOWEST == super::LOWEST);
         };
 
         /// Whether a measurement asked for MMCSS.
@@ -689,9 +719,12 @@ mod priority {
             })
         }
 
-        pub(super) fn time_critical() {
+        /// The calling thread below the host's audio threads ([`super::relative_for`]).
+        pub(super) fn below_host() {
+            // SAFETY: the pseudo-handles of the calling process and thread.
+            let class = unsafe { GetPriorityClass(GetCurrentProcess()) };
             // SAFETY: the pseudo-handle of the calling thread.
-            unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) };
+            unsafe { SetThreadPriority(GetCurrentThread(), super::relative_for(class)) };
         }
     }
 }
@@ -888,10 +921,10 @@ pub(crate) mod tests {
             let voices = fakes(2);
             let me = std::thread::current().id();
             // (The caller's own voice slow, so that the worker takes the other.)
-            voices[0].lock().unwrap().pause = Duration::from_millis(2);
+            voices[0].lock().unwrap().pause = Duration::from_millis(20);
             voices[1].lock().unwrap().panic_away = Some(me);
             let mut pool = ordinary(1, &voices);
-            let played: Vec<bool> = (0..10)
+            let played: Vec<bool> = (0..20)
                 .map(|_| pool.play(&[0, 1], &Len(4), Deadlines::NONE)[1])
                 .collect();
             let _ = tx.send((played, voices[1].is_poisoned()));
@@ -901,6 +934,16 @@ pub(crate) mod tests {
             .expect("the caller was left waiting for a voice that panicked");
         assert!(played.contains(&false), "the worker never took the voice");
         assert!(!poisoned, "the voice's lock poisoned");
+    }
+
+    /// On Windows the workers sit below a host's audio threads: time-critical (15) in an
+    /// ordinary or high class, the lowest (22) in the real-time class, where time-critical would
+    /// be 31.
+    #[test]
+    fn the_workers_sit_below_a_hosts_audio_threads() {
+        assert_eq!(priority::relative_for(0x20), 15, "normal");
+        assert_eq!(priority::relative_for(0x80), 15, "high");
+        assert_eq!(priority::relative_for(0x100), -2, "real-time");
     }
 
     /// Past the deadline with no grace the caller's thread plays every voice itself.

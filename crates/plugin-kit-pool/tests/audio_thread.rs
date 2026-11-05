@@ -87,7 +87,10 @@ struct Instance {
     ask: Ask,
 }
 
-static BUDGET: Budget = Budget::new(|_| 6, || usize::MAX, || None);
+/// The seats' folder: a temporary one of the test's, so that the seats are real files (taken,
+/// looked at and given up on the helpers) and the audio thread's count of them means something.
+static SEATS: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+static BUDGET: Budget = Budget::new(|_| 6, || usize::MAX, || SEATS.get().cloned());
 
 impl Instance {
     fn new(voices: usize) -> Instance {
@@ -147,6 +150,8 @@ impl Instance {
 
 #[test]
 fn the_audio_thread_neither_starts_nor_joins_nor_allocates() {
+    let seats = tempfile::tempdir().unwrap();
+    SEATS.set(seats.path().to_owned()).unwrap();
     let mut a = Instance::new(4);
     let mut b = Instance::new(4);
     let list = [0usize, 1, 2, 3];
@@ -157,6 +162,7 @@ fn the_audio_thread_neither_starts_nor_joins_nor_allocates() {
     let (t0, io0) = (threads_here(), seats::io_here());
     let mut held_alone = 0;
     let mut held_shared = 0;
+    let mut seat_files = 0;
     ARMED.with(|c| c.set(true));
     for round in 0..6 {
         let want = [3, 0, 1, 3, 0, 2][round];
@@ -166,6 +172,7 @@ fn the_audio_thread_neither_starts_nor_joins_nor_allocates() {
             std::thread::sleep(Duration::from_micros(300));
         }
         ARMED.with(|c| c.set(false));
+        seat_files = seat_files.max(BUDGET.seats_here());
         let (wa, wb) = (
             a.pool.as_ref().map_or(0, Pool::workers),
             b.pool.as_ref().map_or(0, Pool::workers),
@@ -195,6 +202,7 @@ fn the_audio_thread_neither_starts_nor_joins_nor_allocates() {
         "allocated or freed on the audio thread"
     );
     assert_eq!(held_shared, 6, "two instances at three each");
+    assert_eq!(seat_files, 2, "the seats not taken in their files");
     assert!(held_alone >= 1, "no workers alone");
     // Both let go and stopped: every worker back.
     let t = Instant::now();

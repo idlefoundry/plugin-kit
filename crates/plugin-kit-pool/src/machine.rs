@@ -65,8 +65,17 @@ mod sys {
     #[cfg(windows)]
     pub fn fast() -> Option<usize> {
         use windows_sys::Win32::System::SystemInformation::{
-            GetLogicalProcessorInformationEx, RelationProcessorCore,
+            GetLogicalProcessorInformationEx, PROCESSOR_RELATIONSHIP, RelationProcessorCore,
             SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
+        };
+        // (The offsets `classes` reads by, as the system's types have them.)
+        const _: () = {
+            assert!(std::mem::offset_of!(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX, Size) == SIZE_AT);
+            assert!(
+                std::mem::offset_of!(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX, Anonymous) == DATA_AT
+            );
+            assert!(std::mem::offset_of!(PROCESSOR_RELATIONSHIP, EfficiencyClass) == CLASS_AT);
+            assert!(DATA_AT + std::mem::size_of::<PROCESSOR_RELATIONSHIP>() == CORE_RECORD);
         };
         let mut len = 0u32;
         // SAFETY: asked for the length only.
@@ -81,31 +90,51 @@ mod sys {
         let p = buf
             .as_mut_ptr()
             .cast::<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>();
-        // SAFETY: a buffer of `len` bytes.
+        // SAFETY: a buffer of at least `len` bytes.
         if unsafe { GetLogicalProcessorInformationEx(RelationProcessorCore, p, &mut len) } == 0 {
             return None;
         }
-        let mut classes = Vec::new();
-        let mut off = 0usize;
-        while off + std::mem::size_of::<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>() <= len as usize {
-            // SAFETY: within the buffer the system filled, one record of `Size` bytes at a time.
-            let r = unsafe {
-                &*buf
-                    .as_ptr()
-                    .cast::<u8>()
-                    .add(off)
-                    .cast::<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>()
-            };
-            if r.Size == 0 {
-                break;
-            }
-            // SAFETY: the record is a processor core's (the relation asked for).
-            classes.push(unsafe { r.Anonymous.Processor.EfficiencyClass });
-            off += r.Size as usize;
-        }
+        let bytes: Vec<u8> = buf.iter().flat_map(|w| w.to_ne_bytes()).collect();
+        let classes = classes(&bytes[..(len as usize).min(bytes.len())]);
         let top = *classes.iter().max()?;
         let mixed = classes.iter().any(|&c| c != top);
         mixed.then(|| classes.iter().filter(|&&c| c == top).count())
+    }
+
+    /// Where a `SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX` record keeps its size and its
+    /// relationship's data, where a core's `PROCESSOR_RELATIONSHIP` keeps its efficiency class,
+    /// and the size of a core's record (the type itself is larger: its union holds the largest
+    /// relationship, 80 bytes against a core's 48).
+    #[cfg(any(windows, test))]
+    const SIZE_AT: usize = 4;
+    #[cfg(any(windows, test))]
+    const DATA_AT: usize = 8;
+    #[cfg(any(windows, test))]
+    const CLASS_AT: usize = 1;
+    #[cfg(any(windows, test))]
+    const CORE_RECORD: usize = 48;
+
+    /// Each core's efficiency class from `GetLogicalProcessorInformationEx`'s records for
+    /// `RelationProcessorCore`, each read by its own size; a record shorter than a core's, or
+    /// running past the end, ends the reading.
+    #[cfg(any(windows, test))]
+    pub(crate) fn classes(bytes: &[u8]) -> Vec<u8> {
+        let mut classes = Vec::new();
+        let mut off = 0usize;
+        while let Some(head) = bytes.get(off..off + DATA_AT) {
+            let size = u32::from_ne_bytes([
+                head[SIZE_AT],
+                head[SIZE_AT + 1],
+                head[SIZE_AT + 2],
+                head[SIZE_AT + 3],
+            ]) as usize;
+            if size < CORE_RECORD || off + size > bytes.len() {
+                break;
+            }
+            classes.push(bytes[off + DATA_AT + CLASS_AT]);
+            off += size;
+        }
+        classes
     }
 
     #[cfg(target_os = "linux")]
@@ -205,6 +234,34 @@ mod tests {
     fn the_fast_cores_are_among_all_of_them() {
         let c = cores();
         assert!(c.fast >= 1 && c.fast <= c.all, "{c:?}");
+    }
+
+    /// Every core's record is read, the last too: a record is a core's 48 bytes, not the
+    /// type's 80 (the reading once stopped 80 bytes before the end and dropped the last core);
+    /// a short or overrunning record ends it.
+    #[test]
+    fn every_cores_record_is_read() {
+        let record = |class: u8| {
+            let mut r = vec![0u8; 48];
+            r[4..8].copy_from_slice(&48u32.to_ne_bytes());
+            r[9] = class;
+            r
+        };
+        let mut bytes: Vec<u8> = [1u8, 1, 0, 0, 1].iter().flat_map(|&c| record(c)).collect();
+        assert_eq!(sys::classes(&bytes), [1, 1, 0, 0, 1]);
+        bytes.truncate(4 * 48 + 20);
+        assert_eq!(
+            sys::classes(&bytes),
+            [1, 1, 0, 0],
+            "a record running past the end read"
+        );
+        let mut short = record(1);
+        short[4..8].copy_from_slice(&8u32.to_ne_bytes());
+        assert_eq!(
+            sys::classes(&short),
+            Vec::<u8>::new(),
+            "a short record read"
+        );
     }
 
     /// A kernel CPU list read as the kernel writes it.

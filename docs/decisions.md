@@ -1149,3 +1149,44 @@ kit 0600).
 the kit's copies are unreleased and nothing uses them yet. The next round makes the kit's
 defaults the CA-72's where the CA-74 agrees or has no counterpart, offers a caller option only
 where the two plug-ins genuinely differ, and then completes the CA-72's switch.
+
+## K-EDITOR-RELEASED-DEFAULTS. Shared editor mechanisms match the released products
+
+2026-11-04, agent decision (not separately approved): round five implements the
+K-EDITOR-CA72-PROOF settlement. The four new editor crates use the released
+CA-72's behaviour by default wherever the CA-74 agrees or has no counterpart.
+The two justified options are CA-74's row-bound prompts and eager inclusive
+damage merging; source counterparts and records are in docs/editor-split.md.
+
+Preset transactions reconstruct recognised fields, move an owned filename
+before rewriting, and serialise within the process without a new library lock
+file. Raw-source and writer hooks carry caller-owned opaque sections. Browser
+ordering, focus and prompt state, deadline pacing, sparse division by 256,
+coverage, future-settings reading and file creation modes follow the released
+sources. Existing framework, audio, materials and standalone crates are unchanged.
+
+The CA-72 proof branch now delegates every retained mechanism. All 872 frame
+comparisons and 184 library files/read snapshots are byte- and hash-identical;
+all 28 CA-74 factory renders and its settings remain bit-identical. Kit debug
+results: 240 passed, none failed, three ignored. The CA-72 full run recorded
+1304 passed, one scheduler failure, 114 ignored; the CA-74 recorded 818 passed,
+one known cancellation race, 90 ignored. Both affected complete targets passed
+unchanged on retry. Neither full product run is claimed green. Approval and
+recomposition checks, eleven negative regressions against old sources, fmt and
+strict Clippy pass. Independent review verified the comparison artifacts and
+exports and found no blocking kit or adapter defect or private-path matches.
+
+The metadata helpers have a source-compatibility exception: explicit generic
+arguments now name an entry type, rather than its parameter payload. Type
+inference remains compatible; no reviewed consumer uses the old explicit form.
+Codec callbacks under a mutating library transaction must not synchronously
+start another mutating library operation, including one on another library:
+the shared process-wide mutex is non-reentrant. Both constraints are documented.
+
+The CA-72 branch is a review proof with a separately exported local kit, not a
+release-ready dependency arrangement. No CA-72 main merge is authorised here.
+Olifant adoption requires focused codec, metadata rewrite, malformed-overlay,
+rename-failure and renderer checks before moving its pin; its manual player-field
+exclusion already works, and it currently uses neither shared browser nor glow.
+No macOS, Windows, real-host, ignored-test or qualified performance result is
+claimed by this round.

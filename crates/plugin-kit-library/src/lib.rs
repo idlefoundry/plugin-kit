@@ -30,6 +30,11 @@ pub const FORMAT: i64 = plugin_kit_settings::FORMAT;
 /// A plug-in's sound data. The factory root is supplied as defaults when reading
 /// factory sounds, and is empty for user sounds. Metadata belongs to this crate;
 /// a codec reads and writes its own keys, including `values` and a writer version.
+///
+/// Mutating library operations serialise through one non-reentrant process-wide
+/// mutex, shared by all directories and codec types. A callback invoked by such
+/// an operation must not synchronously start another mutating library operation,
+/// including one on a different library. Read-only calls do not acquire this mutex.
 pub trait PresetCodec: Clone + Debug {
     type Parameters: Clone + Debug;
 
@@ -748,6 +753,9 @@ impl<P> Metadata for Entry<P> {
         self.origin
     }
 }
+/// Filter entries using their metadata. The explicit type argument is the entry
+/// type: an older `matching::<P>` call becomes `matching::<Entry<P>>`; calls
+/// relying on type inference need no change.
 pub fn matching<E: Metadata + Clone>(
     list: &[E],
     query: &str,
@@ -768,6 +776,8 @@ pub fn matching<E: Metadata + Clone>(
         .cloned()
         .collect()
 }
+/// Collect tags from entries. As with [`matching`], the explicit type argument
+/// is the entry type, rather than its parameter payload.
 pub fn tags_of<E: Metadata>(list: &[E]) -> Vec<String> {
     let mut tags: Vec<String> = Vec::new();
     for tag in list.iter().flat_map(Metadata::tags) {

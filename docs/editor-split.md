@@ -422,9 +422,17 @@ Only the two documented product differences need options. Parameters, factory
 versions, tuning laws, byte spelling, error wording and panel geometry are codec
 or adapter policy. No unreleased behaviour is retained as a compatibility switch.
 
-Further compatible interfaces let a caller implement `Metadata` on a thin entry
+The metadata interfaces let a caller implement `Metadata` on a thin entry
 adapter, use the shared `matching` and `tags_of`, and reuse an immutable factory
 set in `Library::in_directory` with a separate read cache. `raw_section` extracts
 an opaque root's original header spans. Both released user readers treat a
 non-integer format as an unversioned legacy file; factory roots and overlays
 remain strict. Overlay errors name the file and say that it is left as it is.
+
+There is one source-compatibility exception: explicit generic calls to
+`matching::<P>` and `tags_of::<P>` now name the entry type,
+`matching::<Entry<P>>` and `tags_of::<Entry<P>>`, or omit the generic argument
+and use inference. No reviewed consumer uses the old explicit form. Codec
+callbacks invoked by a mutating library operation must not synchronously start
+another mutating library operation, even on a different directory or codec:
+all library transactions share one non-reentrant process-wide mutex.

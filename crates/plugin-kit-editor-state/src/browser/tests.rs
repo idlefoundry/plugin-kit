@@ -535,3 +535,23 @@ fn a_zero_step_still_selects_the_current_or_last_row_as_released() {
             .any(|e| matches!(e, BrowserEffect::Choose(id) if id.name == current))
     );
 }
+
+#[test]
+fn ending_a_prompt_preserves_an_unfocused_released_drawer() {
+    let mut b = browser();
+    b.show(true);
+    b.focus = None;
+    b.end_prompt();
+    assert_eq!(b.focus(), None);
+    b.act(BrowserAction::Choose {
+        row: 0,
+        close: false,
+    });
+    assert_eq!(b.focus(), None);
+    b.act(BrowserAction::Rename);
+    b.end_prompt();
+    assert_eq!(b.focus(), Some(FieldId::Search));
+    b.show(false);
+    b.show(true);
+    assert_eq!(b.focus(), Some(FieldId::Search));
+}

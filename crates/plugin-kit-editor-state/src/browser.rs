@@ -327,7 +327,14 @@ impl BrowserState {
     pub fn end_prompt(&mut self) {
         self.prompt = None;
         self.pending = None;
-        self.focus = self.open.then_some(FieldId::Search);
+        if !self.open {
+            self.focus = None;
+        } else if matches!(
+            self.focus,
+            Some(FieldId::Edit | FieldId::SaveName | FieldId::SaveTags)
+        ) {
+            self.focus = Some(FieldId::Search);
+        }
     }
 
     pub fn show(&mut self, on: bool) {
@@ -336,6 +343,7 @@ impl BrowserState {
         }
         self.open = on;
         self.end_prompt();
+        self.focus = on.then_some(FieldId::Search);
         self.error = None;
     }
 

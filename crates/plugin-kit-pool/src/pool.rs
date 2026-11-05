@@ -232,8 +232,13 @@ pub(crate) struct Spec<'a, V> {
     pub(crate) threads: Threads,
     /// The threads' names' start (`<name>-voices-<k>`).
     pub(crate) name: &'a str,
-    /// The workers the plug-in asked for, its seat's share and the share it was started at.
+    /// The plan's generation it is for ([`crate::Crew::plan`]), the workers the plug-in asked
+    /// for, the most it may have whatever its share (its ask, the voices less one and the
+    /// machine's cap), its seat's share, and the workers it was to have at that share (the most,
+    /// or the share if less).
+    pub(crate) generation: u64,
     pub(crate) want: usize,
+    pub(crate) limit: usize,
     pub(crate) share: Option<Arc<AtomicUsize>>,
     pub(crate) target: usize,
 }
@@ -248,9 +253,12 @@ pub struct Pool<V: Play> {
     grace: Option<Instant>,
     /// The budget its workers came out of, and how many.
     budget: Option<(&'static Budget, usize)>,
-    /// What it was started for: the workers asked for, its seat's share and the share it was
-    /// started at, and whether it got fewer than it was to have.
+    /// What it was started for: the plan's generation, the workers asked for, the most it may
+    /// have, its seat's share and the workers it was to have at it, and whether it got fewer
+    /// than that.
+    generation: u64,
     want: usize,
+    limit: usize,
     share: Option<Arc<AtomicUsize>>,
     target: usize,
     short: bool,
@@ -276,7 +284,9 @@ impl<V: Play> Pool<V> {
             voices,
             threads,
             name,
+            generation,
             want,
+            limit,
             share,
             target,
         } = spec;
@@ -315,7 +325,9 @@ impl<V: Play> Pool<V> {
             run: 0,
             grace: None,
             budget: threads.budgeted().then_some((budget, workers)),
+            generation,
             want,
+            limit,
             share,
             target,
             short: workers < asked,
@@ -346,14 +358,20 @@ impl<V: Play> Pool<V> {
         self.want
     }
 
-    /// Whether it is to be started again: its seat's share has changed, or it got fewer than
-    /// its share and some is free again (the CA-72's R-THREADS). An atomic load or two: on the
-    /// audio thread.
+    /// The plan's generation it was started for ([`crate::Crew::plan`]).
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Whether it is to be started again: its seat's share has moved so that it would have
+    /// another number of workers (a pool of one at a share of six keeps its one at three), or
+    /// it got fewer than it was to have and some is free again (the CA-72's R-THREADS). An atomic
+    /// load or two: on the audio thread.
     pub fn stale(&self) -> bool {
         let moved = self
             .share
             .as_ref()
-            .is_some_and(|s| s.load(Ordering::Acquire) != self.target);
+            .is_some_and(|s| self.limit.min(s.load(Ordering::Acquire)) != self.target);
         moved || (self.short && self.budget.is_some_and(|(b, _)| b.free() > 0))
     }
 
@@ -614,10 +632,14 @@ fn work<V: Play>(b: &Board<V>, period: Option<Duration>, driver: bool) {
             if !current(b, number) {
                 break;
             }
-            let mark = if poisoned {
+            // A voice that panics is marked failed, silent for the run, rather than leave the
+            // caller waiting for it (offline, for ever) and this worker gone.
+            let mark = if poisoned
+                || std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| p.play(&settings)))
+                    .is_err()
+            {
                 u64::from(number) | FAILED
             } else {
-                p.play(&settings);
                 u64::from(number)
             };
             b.done[slot].store(mark, Ordering::Release);
@@ -713,6 +735,8 @@ pub(crate) mod tests {
         pub(crate) pause: Duration,
         /// A pause when played on any thread but this one (a worker's slow voice).
         pub(crate) away: Option<(ThreadId, Duration)>,
+        /// A panic when played on any thread but this one.
+        pub(crate) panic_away: Option<ThreadId>,
     }
 
     impl Play for Fake {
@@ -737,6 +761,11 @@ pub(crate) mod tests {
                 && self.thread != Some(t)
             {
                 std::thread::sleep(pause);
+            }
+            if let Some(t) = self.panic_away
+                && self.thread != Some(t)
+            {
+                panic!("a voice's panic, for the test");
             }
         }
     }
@@ -766,7 +795,9 @@ pub(crate) mod tests {
                 voices,
                 threads,
                 name: "test",
+                generation: 1,
                 want: workers,
+                limit: workers,
                 share: None,
                 target: 0,
             },
@@ -846,6 +877,30 @@ pub(crate) mod tests {
         assert!(late, "the worker's slow voice was never late");
         // (Every run the worker did play it counted once.)
         assert!(runs(1) <= 50 && runs(0) == 50);
+    }
+
+    /// Offline (every voice waited for), a voice that panics on a worker is marked failed,
+    /// silent for its run: the caller is not left waiting for it, and the worker plays on.
+    #[test]
+    fn a_voice_that_panics_on_a_worker_leaves_no_caller_waiting() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let voices = fakes(2);
+            let me = std::thread::current().id();
+            // (The caller's own voice slow, so that the worker takes the other.)
+            voices[0].lock().unwrap().pause = Duration::from_millis(2);
+            voices[1].lock().unwrap().panic_away = Some(me);
+            let mut pool = ordinary(1, &voices);
+            let played: Vec<bool> = (0..10)
+                .map(|_| pool.play(&[0, 1], &Len(4), Deadlines::NONE)[1])
+                .collect();
+            let _ = tx.send((played, voices[1].is_poisoned()));
+        });
+        let (played, poisoned) = rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the caller was left waiting for a voice that panicked");
+        assert!(played.contains(&false), "the worker never took the voice");
+        assert!(!poisoned, "the voice's lock poisoned");
     }
 
     /// Past the deadline with no grace the caller's thread plays every voice itself.
@@ -954,7 +1009,9 @@ pub(crate) mod tests {
                 voices: &voices,
                 threads: Threads::Budgeted,
                 name: "test",
+                generation: 1,
                 want: 3,
+                limit: 3,
                 share: None,
                 target: 0,
             },

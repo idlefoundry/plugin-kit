@@ -49,15 +49,16 @@ struct Hand<V: Play> {
     back: Option<Pool<V>>,
 }
 
-/// Where the audio thread's ask for workers stands.
+/// Where the audio thread's ask for workers stands, for which plan's generation
+/// ([`Crew::plan`]): an ask or answer for an earlier plan counts as none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Ask {
     #[default]
     Not,
     /// Asked; until the answer comes, the voices play on the audio thread.
-    Waiting,
+    Waiting(u64),
     /// Answered: a pool, or none, until the workers are next wanted anew.
-    Answered,
+    Answered(u64),
 }
 
 impl<V: Play> std::fmt::Debug for Crew<V> {
@@ -143,28 +144,29 @@ impl<V: Play> Crew<V> {
             return None;
         }
         let asked = want.min(p.workers).min(p.voices.len() - 1);
-        let (workers, share, target) = if p.threads.budgeted() {
+        // (The most it may have whatever its share; at the share now, the workers it is to have.
+        // It is started again only when that number would change: `Pool::stale`.)
+        let (limit, share, target) = if p.threads.budgeted() {
             let share = lock(&self.seat)
                 .get_or_insert_with(|| self.budget.sit())
                 .share
                 .clone();
-            let target = share.load(Ordering::Acquire);
-            (
-                asked.min(target).min(self.budget.cap()),
-                Some(share),
-                target,
-            )
+            let limit = asked.min(self.budget.cap());
+            let target = limit.min(share.load(Ordering::Acquire));
+            (limit, Some(share), target)
         } else {
-            (asked, None, 0)
+            (asked, None, asked)
         };
         Pool::start(
             self.budget,
             Spec {
-                workers,
+                workers: target,
                 voices: &p.voices,
                 threads: p.threads,
                 name: self.name,
+                generation,
                 want,
+                limit,
                 share,
                 target,
             },
@@ -203,25 +205,33 @@ impl<V: Play> Crew<V> {
     }
 
     /// The answer for plan `generation` to the audio thread, while it still asks for it and
-    /// has none; else its pool stopped here.
+    /// has none; else its pool stopped here, and, with nothing asked for, ready or let go, the
+    /// seat given up (the ask was withdrawn while the pool was being started: nothing else
+    /// would give it up).
     fn deliver(&self, generation: u64, pool: Option<Pool<V>>) {
-        let late = {
+        let (late, idle) = {
             let mut h = lock(&self.hand);
             if h.asked == generation && h.ready.is_none() {
                 h.ready = Some((generation, pool));
-                None
+                (None, false)
             } else {
-                pool
+                let idle = h.asked == 0 && h.ready.is_none() && h.back.is_none();
+                (pool, idle)
             }
         };
+        // (Stopped once the lock is let go: the audio thread may be trying it.)
         drop(late);
+        if idle {
+            drop(lock(&self.seat).take());
+        }
     }
 
     /// At a block's start, on the audio thread, without waiting: its `pool` and `ask` brought
     /// towards `want` workers (0: none) of plan `generation`. Wanted, a pool started for the
     /// plan is taken once it is ready, or asked for, once (until it comes, the caller plays
-    /// every voice itself); a pool for another count, or whose share has moved, is let go and
-    /// asked for again. Not wanted, the pool is let go to be stopped off this thread and the
+    /// every voice itself); a pool for another plan or count, or whose share has moved so that
+    /// it would have another number of workers, is let go and asked for again; an ask or answer
+    /// for another plan counts as none. Not wanted, the pool is let go to be stopped off this thread and the
     /// ask withdrawn. A pool moves; none is started or stopped here, and nothing is allocated
     /// or freed. Should the helper thread hold the lock, this is tried again at the next block.
     /// Returns whether [`Crew::serve`] is due (the helper thread to be asked).
@@ -232,9 +242,17 @@ impl<V: Play> Crew<V> {
         pool: &mut Option<Pool<V>>,
         ask: &mut Ask,
     ) -> bool {
-        let again = want > 0 && pool.as_ref().is_some_and(|p| p.want() != want || p.stale());
+        if let Ask::Waiting(g) | Ask::Answered(g) = *ask
+            && g != generation
+        {
+            *ask = Ask::Not;
+        }
+        let again = want > 0
+            && pool
+                .as_ref()
+                .is_some_and(|p| p.generation() != generation || p.want() != want || p.stale());
         let settled = if want > 0 {
-            !again && (pool.is_some() || *ask == Ask::Answered)
+            !again && (pool.is_some() || *ask == Ask::Answered(generation))
         } else {
             pool.is_none() && *ask == Ask::Not
         };
@@ -253,7 +271,7 @@ impl<V: Play> Crew<V> {
                 h.back = pool.take();
                 h.asked = generation;
                 h.want = want;
-                *ask = Ask::Waiting;
+                *ask = Ask::Waiting(generation);
                 return true;
             }
             // (With no pool here: taking the answer drops nothing. One may be ready for an ask
@@ -261,13 +279,13 @@ impl<V: Play> Crew<V> {
             if let Some((_, answer)) = h.ready.take_if(|(g, _)| *g == generation) {
                 *pool = answer;
                 h.asked = 0;
-                *ask = Ask::Answered;
+                *ask = Ask::Answered(generation);
                 return false;
             }
             if *ask == Ask::Not {
                 h.asked = generation;
                 h.want = want;
-                *ask = Ask::Waiting;
+                *ask = Ask::Waiting(generation);
                 return true;
             }
             // (Asked for another count meanwhile: the answer, when it comes, is let go again.)
@@ -315,7 +333,7 @@ mod tests {
         assert_eq!((SIX.held(), SIX.seated()), (0, 0));
         for round in 0..3 {
             assert!(crew.follow(3, g, &mut pool, &mut ask), "round {round}");
-            assert!(pool.is_none() && ask == Ask::Waiting);
+            assert!(pool.is_none() && ask == Ask::Waiting(g));
             crew.serve();
             assert!(!crew.follow(3, g, &mut pool, &mut ask));
             assert_eq!(pool.as_ref().map(Pool::workers), Some(3));
@@ -425,6 +443,100 @@ mod tests {
         drop(pa.take());
         a.clear();
         b.clear();
+        assert_eq!((SIX.held(), SIX.seated()), (0, 0));
+    }
+
+    /// An ask withdrawn while the helper is starting its pool (UNISON back to 1 meanwhile):
+    /// the late pool is stopped and the seat given up, nothing kept from the budget.
+    #[test]
+    fn an_ask_withdrawn_while_its_pool_starts_gives_up_the_seat() {
+        static SIX: Budget = Budget::new(|_| 6, || usize::MAX, || None);
+        let voices = fakes(4);
+        let crew = Crew::new(&SIX, "test");
+        let g = crew.plan(&voices, AUTO, Threads::Budgeted);
+        let (mut pool, mut ask) = (None, Ask::Not);
+        assert!(crew.follow(1, g, &mut pool, &mut ask));
+        // (The helper's serve, step by step: the ask taken, then the pool started.)
+        let (generation, want) = crew.tidy().expect("nothing asked");
+        assert!(!crew.follow(0, g, &mut pool, &mut ask), "withdrawn");
+        let started = crew.start(generation, want);
+        assert_eq!(started.as_ref().map(Pool::workers), Some(1));
+        assert_eq!(SIX.seated(), 1);
+        crew.deliver(generation, started);
+        assert_eq!(
+            (SIX.held(), SIX.seated()),
+            (0, 0),
+            "a seat or a worker kept"
+        );
+        assert!(pool.is_none() && ask == Ask::Not);
+    }
+
+    /// A pool whose share moves but still covers its workers is kept: a pool of one is not
+    /// started again when its share goes from six to three or two; one of three is, at two.
+    #[test]
+    fn a_pool_is_kept_while_its_share_still_covers_it() {
+        static SIX: Budget = Budget::new(|_| 6, || usize::MAX, || None);
+        let (va, vb, vc) = (fakes(4), fakes(4), fakes(4));
+        let (a, b, c) = (
+            Crew::new(&SIX, "a"),
+            Crew::new(&SIX, "b"),
+            Crew::new(&SIX, "c"),
+        );
+        let ga = a.plan(&va, AUTO, Threads::Budgeted);
+        let gb = b.plan(&vb, AUTO, Threads::Budgeted);
+        let gc = c.plan(&vc, AUTO, Threads::Budgeted);
+        let pa = a.start(ga, 1).unwrap();
+        assert_eq!(pa.workers(), 1);
+        let pb = b.start(gb, 3).unwrap();
+        assert_eq!(pb.workers(), 3);
+        assert!(!pa.stale(), "one worker started again at a share of three");
+        assert!(!pb.stale());
+        let pc = c.start(gc, 3).unwrap();
+        assert!(!pa.stale(), "one worker started again at a share of two");
+        assert!(pb.stale(), "three workers kept at a share of two");
+        drop((pa, pb, pc));
+        for crew in [&a, &b, &c] {
+            crew.clear();
+        }
+        assert_eq!((SIX.held(), SIX.seated()), (0, 0));
+    }
+
+    /// A pool started for an earlier plan is let go and one for the new plan asked for, even at
+    /// the same count and share (its voices are the old plan's); an ask made before a new plan
+    /// is made again for it.
+    #[test]
+    fn a_new_plan_is_followed_whatever_the_ask() {
+        static SIX: Budget = Budget::new(|_| 6, || usize::MAX, || None);
+        let (old, new) = (fakes(4), fakes(6));
+        let crew = Crew::new(&SIX, "test");
+        let g1 = crew.plan(&old, AUTO, Threads::Budgeted);
+        let (mut pool, mut ask) = (None, Ask::Not);
+        crew.follow(2, g1, &mut pool, &mut ask);
+        crew.serve();
+        crew.follow(2, g1, &mut pool, &mut ask);
+        assert_eq!(pool.as_ref().map(Pool::generation), Some(g1));
+        let g2 = crew.plan(&new, AUTO, Threads::Budgeted);
+        assert!(
+            crew.follow(2, g2, &mut pool, &mut ask),
+            "the old plan's pool kept"
+        );
+        assert!(pool.is_none() && ask == Ask::Waiting(g2));
+        crew.serve();
+        crew.follow(2, g2, &mut pool, &mut ask);
+        assert_eq!(pool.as_ref().map(Pool::generation), Some(g2));
+        plays(&mut pool, 6);
+        drop(pool.take());
+        // Asked, then a new plan before the answer.
+        let g3 = crew.plan(&old, AUTO, Threads::Budgeted);
+        let (mut pool, mut ask) = (None, Ask::Not);
+        assert!(crew.follow(2, g3, &mut pool, &mut ask));
+        let g4 = crew.plan(&new, AUTO, Threads::Budgeted);
+        assert!(crew.follow(2, g4, &mut pool, &mut ask), "never asked again");
+        crew.serve();
+        crew.follow(2, g4, &mut pool, &mut ask);
+        assert_eq!(pool.as_ref().map(Pool::generation), Some(g4));
+        drop(pool.take());
+        crew.clear();
         assert_eq!((SIX.held(), SIX.seated()), (0, 0));
     }
 

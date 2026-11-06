@@ -1,0 +1,13 @@
+CC0 1.0 Universal
+
+The CA-72 skin pack starter (this folder: skin.toml, layout.toml, art/panel.svg, README.md and
+this file) is dedicated to the public domain. To the extent possible under law, Idle Foundry
+Ltd. has waived all copyright and related or neighboring rights to it. You may copy, change,
+distribute and sell it, and packs made from it, under any licence you choose, without asking.
+
+The full legal code: https://creativecommons.org/publicdomain/zero/1.0/legalcode
+
+This dedication covers the starter's own files only. It does not cover the CA-72 plug-in, its
+code, its official panel's layout (packs/official/layout.toml in its repository) or its
+artwork, which are under the GNU General Public License, version 3 or later: a pack made from
+those is under the GPL too.

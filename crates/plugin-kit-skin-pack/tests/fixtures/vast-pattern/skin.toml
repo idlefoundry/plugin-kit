@@ -1,0 +1,24 @@
+# A pack made by hand to test the plug-in (decisions.md R-SKIN-PACKS): its drawing's pattern's tile
+# is 1000 by ten thousand million units. Before a drawing's buffers were counted, its test drawing
+# asked for some 17 TB for that tile, and the failed allocation aborted the process. Dedicated to
+# the public domain under CC0 1.0.
+
+format = 1
+id = "org.example.vast-pattern"
+name = "VAST PATTERN"
+version = "1.0.0"
+plugin = "ca-72"
+license = "CC0-1.0"
+license_files = ["LICENSE.txt"]
+
+[[creators]]
+name = "Idle Foundry Ltd."
+
+[[assets]]
+path = "art/panel.svg"
+origin = "original"
+author = "Idle Foundry Ltd."
+
+[look]
+base = "classic"
+art = "art/panel.svg"

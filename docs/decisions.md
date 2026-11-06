@@ -1261,3 +1261,34 @@ race), and what was done, at `90bd207`:
 
 **Not tried:** macOS (CI's runners only); a hybrid processor on Linux; hosts other than Cubase
 with this build; the CA-74 and the CA-72 on the crate.
+
+## K-SKIN-PACK. Skin packs move from the CA-72 into the kit
+
+**The owner, 2026-11-06:** "we absolutely should move the skin pack crates into the plug-in kit",
+and every plug-in's skins are to be made this way from now on: anyone can make a look and
+import it, and the plug-in's own looks are packs too.
+
+**Decision:** the CA-72's `skin-pack` crate (its `main`, `4df5c8b`, the CA-72's R-SKIN-PACKS and
+R-SKIN-KEYS) is here as `plugin-kit-skin-pack`, its code unchanged but for its name. One reader,
+one set of checks and one signing key for every plug-in; a plug-in takes it as the other kit
+crates, and may keep its old name in its code with `skin-pack = { package =
+"plugin-kit-skin-pack", ... }`. A pack names its plug-in in its manifest (`plugin = "mc-79"`),
+so a pack for one is never loaded by another. What stays in each plug-in: its layout (the
+controls a pack places, in its `layout.toml`), its renderer, its built-in packs, the LOOK menu
+and its user guide and starter.
+
+- **The release gate** (the first-party key must be in the slot) is on for any of
+  `IDLEFOUNDRY_`, `CA72_`, `CA74_` or `MC79_` `PUBLIC_RELEASE=1` or `REQUIRE_NOTARIZATION=1`,
+  the variables the three plug-ins' packaging already sets; a new plug-in adds its prefix to
+  `build.rs`.
+- **The tests' files** that lived elsewhere in the CA-72 are here: its CC0 starter pack
+  (`tests/fixtures/starter`) and URW Gothic Book with its licence (`tests/fixtures/urw-gothic`,
+  for the font checks; a fixture, not in any binary).
+- The `R-` references in the crate's comments are the CA-72's `docs/decisions.md`.
+
+**Tested:** `cargo test -p plugin-kit-skin-pack --all-targets` (87 tests, all
+passing), clippy and rustfmt clean, and the gate built with `MC79_REQUIRE_NOTARIZATION=1`, on
+Linux.
+
+**Not tried:** Windows and macOS (CI's runners); the CA-72 on the kit's crate (its own branch).
+

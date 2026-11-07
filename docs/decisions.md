@@ -1423,3 +1423,70 @@ the TR-808's renders, so it waits for a change of its own).
   diode equation's anode within 1 nV, and at the same point from the nodes.
 - The op-amp's limit with a slew load; every Jacobian; twenty tests, clippy and rustfmt clean,
   on Linux.
+
+## K-CIRCUIT-LIVE. The TR-808's live engine and reduced stepper move into the kit; MOS limiting as ngspice's; a failed sample taken again
+
+**The owner, 2026-11-07,** chose the order for the MS-20's real-time model: first the TR-808's
+remaining performance engines, staged by K-CIRCUIT to "move when an instrument needs them" ("1.
+Yes, do it."), then fewer ports at the same circuit.
+
+**Decision:** `live` (the live engine: the linear part's modes packed, Newton over the devices'
+controls alone with its Jacobian kept while they stay near, Woodbury corrections, Newton by blocks,
+the pots folded in exactly, the switches' rounds, sub-steps at a source's edge) and `fast` (the
+reduced ring) are here, from 808-plugin `a1a0a9c`, with `serial::array` (serde for the devices'
+fixed arrays). Changed in the move, and nothing else:
+
+- **The TR-808's names:** its study switches read `PLUGIN_KIT_CIRCUIT_*` (were `OLIFANT_*`); its
+  `phase-cost` scopes (they attribute time to the TR-808's voices) are left out; its light curves
+  (`live/curves.rs`, an `impl Live` that names the TR-808's parts and reads the engine's private
+  state) stay in the TR-808. **Staged:** the TR-808, when it moves onto the kit, needs a way for
+  its curves to reach that state (a generic table-ring interface here, or the fields it reads made
+  public); decided then, on its own branch, which proves its renders bit-identical.
+- **The bit-identity test** (the baseline step against the x86-64-v3 copy over 4096 samples of
+  eight transistor stages) is the TR-808's, its parts written as the kit's.
+
+**Agent decisions, 2026-11-07** (not separately approved), found on the MS-20's EG2 (two CD4007
+packages and a CD4069, 23 MOS transistors, the hold latch two inverters closed by 10 Mohm):
+
+- **MOS controls limited as `mos1load.c` limits them** (`dev::MosP::limit`, through
+  `run::limit_controls` wherever the engines limit a Newton step): the gate-source voltage (the
+  gate-drain in inverse mode) by `DEVfetlim`, the drain-source by `DEVlimvds`, then the junction on
+  the source's side by `DEVpnjlim` and the other made from it, so `vbd = vbs - vds` holds.
+  K-CIRCUIT-MS20 limited each of the four controls alone, vgs and vds by 0.5 V a step: on a CMOS
+  latch at its snap Newton then cycled between two drain voltages 0.5 V apart, every step capped,
+  and the latch's output stuck at 5.47 V with its input at 15 V (on the full stepper at 1/64 of a
+  48 kHz sample too). Only MOS transistors change: every other device is limited control by
+  control as before, so the TR-808's arithmetic is unchanged. The operating point (`dc`) keeps its
+  own limits (the MS-20's operating points already match ngspice's, K-CIRCUIT-MS20).
+- **A failed sample taken again in sub-steps** (`Live::set_retry`, off by default): each sample's
+  state is saved at its start (room made when it is turned on: nothing allocated on the audio
+  path); a whole sample's Newton solve not converged after 24 iterations (twice the restart's 12)
+  is given up, the state restored (Newton's Jacobian made again, each device evaluated again) and
+  the sample taken in the sub-steps of a source's edge (the fourth of `with_levels`' sub-step
+  counts), its sources on the line between their values at its start and end. SPICE cuts its
+  time step the same way when Newton fails. A latch's regeneration can be faster than a sample,
+  and at its fold no step of a microsecond converges (its transistors, not its capacitances, rule
+  the step's equations there), so a sample with one is taken again in tens of sub-steps.
+
+**What it buys the MS-20** (deliverable 1 of its real-time brief; one run each on omarchy at nice 19,
+not under the timing lock, the load average 4 to 25 from other work):
+
+| Path | Controls | Full stepper | Live | Live, Newton by blocks |
+|---|---|---|---|---|
+| REV 1 filters and VCA, 192 kHz | 42 | 56 us a step | 7.5 us | 9.8 us (with the `prof` timers) |
+| REV 2 filters and VCA, 192 kHz | 152 | 1098 us | 258 us | 76 us |
+| EG2, 48 kHz | 127 | 329 us a sample | 29 us | 18.6 us, worst 256-sample block 63 ms |
+
+Against ngspice: the filters' harmonics as the full stepper's (REV 1 within 0.035 dB, REV 2 0.041
+dB); live within 4 uV of the dense solve with blocks. EG2 with the MOS limiting and the retry: no
+step capped (217 before), within 9 mV of ngspice at `eg2_vca` over 36 s (0.34 V off at the
+retrigger before) and 19 mV at the switching node `eg2_reverse` (5.8 V before). Still above the
+MS-20's budget (about 21 us a sample for the whole voice): fewer ports is next.
+
+**Tested:** `cargo test -p plugin-kit-circuit` (23 tests): the bit-identity test; the live engine
+against the full stepper on a transistor stage driven by a 10 mV sine (within 3e-8 V, first figure
+1.0e-8); the CMOS latch at 48 kHz, whole samples on both engines with no step capped, within 0.05 V
+of the full stepper at 1/64 of the sample (first figure 0.033 V, the snap's sample); the latch at
+8 kHz, where the snap fails one whole sample on either engine: with the retry none capped, the
+sample taken again once, within 5e-4 V of the full stepper at 1/1024 of the sample (first figure
+3.1e-4 V of 15 V). Clippy and rustfmt clean, on Linux.

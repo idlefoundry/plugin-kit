@@ -719,7 +719,11 @@ impl Net {
                     b.cond(out, Node::Ground, 1.0 / o.rout);
                     b.cap(out, Node::Ground, o.cout, &what);
                     let ctrl = vec![b.lin(iabc).minus(&b.lin(vn)), b.lin(inp).minus(&b.lin(inn))];
-                    let inj = vec![Builder::inj(iabc, vn), Builder::inj(Node::Ground, out)];
+                    let mut inj = vec![Builder::inj(iabc, vn), Builder::inj(Node::Ground, out)];
+                    if o.beta_in.is_finite() {
+                        inj.push(Builder::inj(inp, vn));
+                        inj.push(Builder::inj(inn, vn));
+                    }
                     b.elem(p, "", Dev::Ota(dev::OtaP::new(o)), ctrl, inj);
                     if o.pins.contains(&"v+") {
                         let vp = nodes[pin("v+")];

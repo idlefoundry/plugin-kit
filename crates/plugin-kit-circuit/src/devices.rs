@@ -132,6 +132,16 @@ pub struct Ota {
     /// Transconductance per unit bias current, 1/V (`gm = gm_per_i * Iabc`; a bipolar
     /// differential pair's is 1 / (2 VT)).
     pub gm_per_i: f64,
+    /// The output's full scale per unit bias current at low currents (1 for ideal mirrors; less
+    /// where the mirrors and the input pair lose some of it).
+    pub gain: f64,
+    /// The bias current over which the full scale grows, A: it is `gain * Iabc * (1 + Iabc /
+    /// i_knee)` (mirrors whose transistors' gain falls at high current where their diodes'
+    /// does not); infinite for none.
+    pub i_knee: f64,
+    /// The input pair's current gain: each input draws `Iabc (1 +- tanh) / (2 beta_in)` to V-
+    /// (the pair's base currents); infinite for none.
+    pub beta_in: f64,
     /// The bias input's offset voltage above V-, V (one diode drop for a mirror input).
     pub vbias: f64,
     /// Output resistance, ohm, and capacitance, F.
@@ -357,6 +367,9 @@ pub(crate) mod fixtures {
             "iabc", "in-", "in+", "bias", "v-", "out", "buf_in", "buf_out", "v+",
         ],
         gm_per_i: 1.0 / (2.0 * VT),
+        gain: 1.0,
+        i_knee: f64::INFINITY,
+        beta_in: f64::INFINITY,
         vbias: 0.6,
         rout: 1e7,
         cout: 5e-12,

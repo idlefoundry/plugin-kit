@@ -647,11 +647,27 @@ impl CmpP {
 }
 
 /// The transconductance amplifier: controls `[v(iabc) - v(v-), v(in+) - v(in-)]`; outputs: the
-/// bias diode's current (from the bias pin to V-) and the output current (into the output).
+/// bias diode's current (from the bias pin to V-) and the output current (into the output),
+/// `gain * id * (1 + id / i_knee)` at full scale for the bias current `id`; with a finite
+/// `beta_in`, also the inputs' base currents (into in+ and into in-, each to V-).
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OtaP {
     pub diode: DiodeP,
     pub k: f64,
+    #[serde(default = "unity")]
+    pub gain: f64,
+    #[serde(default = "infinite")]
+    pub i_knee: f64,
+    #[serde(default = "infinite")]
+    pub beta_in: f64,
+}
+
+fn infinite() -> f64 {
+    f64::INFINITY
+}
+
+fn unity() -> f64 {
+    1.0
 }
 
 impl OtaP {
@@ -660,6 +676,9 @@ impl OtaP {
         OtaP {
             diode: DiodeP::from_parts(is, 1.0, 0.0, 1.0, 0.5, 0.0, f64::INFINITY, 0.0, 1e-3),
             k: o.gm_per_i,
+            gain: o.gain,
+            i_knee: o.i_knee,
+            beta_in: o.beta_in,
         }
     }
 }
@@ -710,6 +729,7 @@ impl Dev {
             Dev::Clamp(_) => (2, 1, 0),
             Dev::Schmitt(_) => (4, 3, 0),
             Dev::Cmp(_) => (5, 2, 0),
+            Dev::Ota(p) if p.beta_in.is_finite() => (2, 4, 0),
             Dev::Ota(_) => (2, 2, 0),
             Dev::Mos(_) => (4, 3, 0),
         }
@@ -799,12 +819,25 @@ impl Dev {
                 p.diode.eval(&v[..1], &mut o, &mut j);
                 let (id, gd) = (o[0], j[0]);
                 let t = libm::tanh(p.k * v[1]);
+                // The full scale and its slope in the bias current.
+                let full = p.gain * id * (1.0 + id / p.i_knee);
+                let dfull = p.gain * (1.0 + 2.0 * id / p.i_knee);
                 out[0] = id;
-                out[1] = id * t;
+                out[1] = full * t;
                 jac[0] = gd;
                 jac[1] = 0.0;
-                jac[2] = gd * t;
-                jac[3] = id * p.k * (1.0 - t * t);
+                jac[2] = dfull * gd * t;
+                jac[3] = full * p.k * (1.0 - t * t);
+                if p.beta_in.is_finite() {
+                    let b = 0.5 / p.beta_in;
+                    let dt = p.k * (1.0 - t * t);
+                    out[2] = b * id * (1.0 + t);
+                    out[3] = b * id * (1.0 - t);
+                    jac[4] = b * gd * (1.0 + t);
+                    jac[5] = b * id * dt;
+                    jac[6] = b * gd * (1.0 - t);
+                    jac[7] = -b * id * dt;
+                }
             }
         }
     }
@@ -973,6 +1006,44 @@ mod tests {
             Dev::Ota(OtaP::new(&dv::BA662)),
             &[vec![0.6, 0.003], vec![0.55, -0.05], vec![0.2, 0.0]],
         );
+        // With a gain under 1, a knee and the input pair's base currents (an LM13600 section's
+        // fit, the MS-20's D107), up to a bias current past the knee.
+        let lossy = Ota {
+            gain: 0.959,
+            i_knee: 6e-3,
+            beta_in: 150.0,
+            ..dv::BA662
+        };
+        check(
+            Dev::Ota(OtaP::new(&lossy)),
+            &[
+                vec![0.6, 0.003],
+                vec![0.55, -0.05],
+                vec![0.2, 0.0],
+                vec![0.68, 0.02],
+            ],
+        );
+    }
+
+    /// A unit gain, no knee and no base currents leave the transconductance amplifier as it was:
+    /// two outputs, the bias current's tanh.
+    #[test]
+    fn an_ideal_ota_is_unchanged() {
+        let p = OtaP::new(&dv::BA662);
+        assert_eq!(Dev::Ota(p).shape(), (2, 2, 0));
+        let v = [0.58, 0.013];
+        let (mut out, mut jac) = ([0.0; 2], [0.0; 4]);
+        Dev::Ota(p).eval(&v, &mut out, &mut jac);
+        let (mut o, mut j) = ([0.0; 2], [0.0; 2]);
+        p.diode.eval(&v[..1], &mut o, &mut j);
+        let t = libm::tanh(p.k * v[1]);
+        assert_eq!(out, [o[0], o[0] * t]);
+        assert_eq!(jac, [j[0], 0.0, j[0] * t, o[0] * p.k * (1.0 - t * t)]);
+        let lossy = Ota {
+            beta_in: 150.0,
+            ..dv::BA662
+        };
+        assert_eq!(Dev::Ota(OtaP::new(&lossy)).shape(), (2, 4, 0));
     }
 
     #[test]

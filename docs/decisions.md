@@ -1490,3 +1490,27 @@ of the full stepper at 1/64 of the sample (first figure 0.033 V, the snap's samp
 8 kHz, where the snap fails one whole sample on either engine: with the retry none capped, the
 sample taken again once, within 5e-4 V of the full stepper at 1/1024 of the sample (first figure
 3.1e-4 V of 15 V). Clippy and rustfmt clean, on Linux.
+
+## K-CIRCUIT-OTA. The transconductance amplifier's gain, high-current knee and input currents
+
+**The owner, 2026-11-07,** asked for fewer ports at the same circuit for the MS-20's real-time
+model ("go on with option 2"): each LM13600 section of its REV 2 filters (13 transistors and 4
+diodes, 30 controls) as one transconductance amplifier, fitted to its transistors and checked
+against them.
+
+**Agent decision, 2026-11-07** (not separately approved): `devices::Ota` gains three fields, each
+of which leaves the BA662's arithmetic unchanged at its value there (a test holds the ideal
+device to the old formula, bit for bit, and to its two outputs):
+
+- `gain`: the output's full scale per unit bias current at low currents (1 for ideal mirrors).
+  The MS-20's LM13600 sections give 0.959 (TI's LM13700 equivalent circuit on the MS-20's cards).
+- `i_knee`: the full scale is `gain * Iabc * (1 + Iabc / i_knee)`; infinite for none. In those
+  sections the mirrors' transistors lose gain at high current (their `IKF`) and their matched
+  diodes do not, so each mirror's ratio rises with the current: 0.959 at 1 uA, 0.978 at 100 uA,
+  1.17 at 830 uA, the top of the MS-20's cutoff dial.
+- `beta_in`: the input pair's current gain; finite, each input draws `Iabc (1 +- tanh) / (2
+  beta_in)` to V- (two more outputs, no more controls). In the MS-20's 220 ohm input dividers
+  they take about 0.3 % of the transconductance, which its filters' resonance shows.
+
+**Tested:** the device's Jacobian against central differences with all three, up to a bias current
+past the knee; the ideal device's outputs and Jacobian equal to the old formula's.

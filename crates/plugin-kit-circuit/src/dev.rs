@@ -465,6 +465,45 @@ pub struct MosP {
 }
 
 impl MosP {
+    /// One Newton iteration's controls `new` (vgs, vds, vbs, vbd, in the device's polarity)
+    /// limited from `old` as `mos1load.c` limits them: the gate-source voltage (in inverse mode
+    /// the gate-drain) by `DEVfetlim` around the threshold, the drain-source by `DEVlimvds`,
+    /// then the junction on the source's side by `DEVpnjlim` and the other made from it, so
+    /// that `vbd = vbs - vds` holds. Whether any moved.
+    pub fn limit(&self, new: &mut [f64], old: &[f64]) -> bool {
+        let (vgs, vds_want, vbs, vbd) = (new[0], new[1], new[2], new[3]);
+        // (Whether a limit moved the voltage it limits; the others are made from them, which
+        // round-off alone would count as moved.)
+        let mut limited;
+        let vds;
+        let vgs_out;
+        let vgd = vgs - vds_want;
+        if old[1] >= 0.0 {
+            vgs_out = fetlim(vgs, old[0], self.von);
+            let free = vgs_out - vgd;
+            vds = limvds(free, old[1]);
+            limited = vgs_out != vgs || vds != free;
+        } else {
+            let vgd_out = fetlim(vgd, old[0] - old[1], self.von);
+            let free = vgs - vgd_out;
+            vds = -limvds(-free, -old[1]);
+            vgs_out = vgd_out + vds;
+            limited = vgd_out != vgd || vds != free;
+        }
+        let vcrit = self.vt * libm::log(self.vt / (std::f64::consts::SQRT_2 * self.is));
+        let (vbs_out, vbd_out) = if vds >= 0.0 {
+            let (x, l) = crate::run::pnjlim(vbs, old[2], self.vt, vcrit);
+            limited |= l;
+            (x, x - vds)
+        } else {
+            let (x, l) = crate::run::pnjlim(vbd, old[3], self.vt, vcrit);
+            limited |= l;
+            (x + vds, x)
+        };
+        new[..4].copy_from_slice(&[vgs_out, vds, vbs_out, vbd_out]);
+        limited
+    }
+
     pub fn new(m: &Mos) -> MosP {
         MosP {
             von: m.type_sign() * m.vto,
@@ -768,6 +807,66 @@ impl Dev {
                 jac[3] = id * p.k * (1.0 - t * t);
             }
         }
+    }
+}
+
+/// ngspice's `DEVfetlim` (devsup.c): a FET's gate voltage's step limited about its threshold.
+fn fetlim(vnew: f64, vold: f64, vto: f64) -> f64 {
+    let vtsthi = (2.0 * (vold - vto)).abs() + 2.0;
+    let vtstlo = (vold - vto).abs() + 1.0;
+    let vtox = vto + 3.5;
+    let delv = vnew - vold;
+    if vold >= vto {
+        if vold >= vtox {
+            if delv <= 0.0 {
+                // Going off.
+                if vnew >= vtox {
+                    if -delv > vtstlo {
+                        return vold - vtstlo;
+                    }
+                    vnew
+                } else {
+                    vnew.max(vto + 2.0)
+                }
+            } else if delv >= vtsthi {
+                // Staying on.
+                vold + vtsthi
+            } else {
+                vnew
+            }
+        } else if delv <= 0.0 {
+            // The middle region, decreasing.
+            vnew.max(vto - 0.5)
+        } else {
+            vnew.min(vto + 4.0)
+        }
+    } else if delv <= 0.0 {
+        // Off.
+        if -delv > vtsthi { vold - vtsthi } else { vnew }
+    } else {
+        let vtemp = vto + 0.5;
+        if vnew <= vtemp {
+            if delv > vtstlo { vold + vtstlo } else { vnew }
+        } else {
+            vtemp
+        }
+    }
+}
+
+/// ngspice's `DEVlimvds` (devsup.c): a FET's drain-source voltage's step limited.
+fn limvds(vnew: f64, vold: f64) -> f64 {
+    if vold >= 3.5 {
+        if vnew > vold {
+            vnew.min(3.0 * vold + 2.0)
+        } else if vnew < 3.5 {
+            vnew.max(2.0)
+        } else {
+            vnew
+        }
+    } else if vnew > vold {
+        vnew.min(4.0)
+    } else {
+        vnew.max(-0.5)
     }
 }
 

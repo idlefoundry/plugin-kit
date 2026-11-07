@@ -4,9 +4,10 @@
 
 use crate::dc::operating_point;
 use crate::devices::{Bjt, Diode, Jfet, Library, Mos, fixtures};
+use crate::live::Live;
 use crate::net::{Circuit, Net, Opts};
 use crate::part::{Kind, Part};
-use crate::run::Stepper;
+use crate::run::{Counters, Stepper};
 use crate::ss::{Modal, System};
 
 /// A part in section `t`, its local nodes written `t_name` and `@name` global, as an
@@ -392,4 +393,166 @@ fn a_loaded_cmos_inverters_step_converges_on_ngspice() {
         assert!(w[1] < w[0] / 3.5, "{errors:?}");
     }
     assert!(errors[4] < 2e-3, "{errors:?}");
+}
+
+/// The symmetric CMOS pair of the inverter tests.
+static LATCH_N: Mos = Mos {
+    name: "TEST_N",
+    pmos: false,
+    vto: 1.5,
+    beta: 0.36e-3,
+    lambda: 0.01,
+    is: 1e-14,
+};
+static LATCH_P: Mos = Mos {
+    name: "TEST_P",
+    pmos: true,
+    vto: -1.5,
+    ..LATCH_N
+};
+static LATCH_MOS: [&Mos; 2] = [&LATCH_N, &LATCH_P];
+
+/// Two CMOS inverters in a loop closed by 10 Mohm, driven through 1 Mohm: a latch (a Schmitt
+/// trigger of two gates) that snaps on its own state once its input passes its threshold, each
+/// node with 10 pF; its system with the second inverter's output probed.
+fn latch() -> System {
+    let mut parts = Vec::new();
+    for (g, i, o) in [("A", "x", "y"), ("B", "y", "z")] {
+        parts.push(part(
+            &format!("MN{g}"),
+            Kind::M(LATCH_N.name),
+            &[o, i, "0", "0"],
+        ));
+        parts.push(part(
+            &format!("MP{g}"),
+            Kind::M(LATCH_P.name),
+            &[o, i, "@vdd", "@vdd"],
+        ));
+    }
+    parts.push(part("RI", Kind::R(1e6), &["@in", "x"]));
+    parts.push(part("RF", Kind::R(10e6), &["z", "x"]));
+    for n in ["x", "y", "z"] {
+        parts.push(part(&format!("C{n}"), Kind::C(10e-12), &[n, "0"]));
+    }
+    let circuit = Circuit {
+        library: Library {
+            mos: &LATCH_MOS,
+            ..Default::default()
+        },
+        rails: vec![("vdd".to_string(), 15.0)],
+    };
+    let net = Net::build(&parts, &opts(&["in"]), &circuit);
+    let u0 = [1.0, 0.0];
+    let op = operating_point(&net, &u0).expect("operating point");
+    System::new(&net, &op, &u0, &["t_z"])
+}
+
+/// The latch's input: a ramp from 0 to 15 V over 2 ms, at sample `k` of rate `rate`.
+fn latch_input(k: f64, rate: f64) -> f64 {
+    15.0 * (k / rate / 2e-3).clamp(0.0, 1.0)
+}
+
+/// The latch stepped by the full stepper at `rate` in `sub` steps a sample over 6 ms, its
+/// output at each sample's end, and its counters.
+fn latch_full(sys: &System, rate: f64, sub: usize) -> (Vec<f64>, Counters) {
+    let mut s = Stepper::new(sys, Modal::new(sys), 1.0 / rate / sub as f64);
+    let mut out = Vec::new();
+    for k in 1..=(6e-3 * rate) as usize * sub {
+        s.step(&[1.0, latch_input(k as f64 / sub as f64, rate)]);
+        if k % sub == 0 {
+            out.push(*s.y.last().expect("the probe"));
+        }
+    }
+    (out, s.counters)
+}
+
+fn largest_difference(a: &[f64], b: &[f64]) -> f64 {
+    assert_eq!(a.len(), b.len());
+    assert!(a.iter().chain(b).all(|x| x.is_finite()));
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0, f64::max)
+}
+
+#[test]
+fn a_cmos_latch_snaps_with_ngspices_mos_limiting() {
+    // At 48 kHz the latch snaps within a sample. With each MOS control limited alone (a fixed
+    // 0.5 V a step) Newton cycled between two drain voltages 0.5 V apart and the output stuck
+    // at 5.47 V with the input at 15 V, every step capped, at 1/64 of the sample too;
+    // limited as `mos1load.c` limits them, the whole samples converge on the fine steps.
+    let sys = latch();
+    let rate = 48_000.0;
+    let (fine, c) = latch_full(&sys, rate, 64);
+    assert_eq!(c.capped, 0, "{c:?}");
+    assert!(
+        fine.last().is_some_and(|z| (z - 15.0).abs() < 1e-3),
+        "{:?}",
+        fine.last()
+    );
+    let (whole, c) = latch_full(&sys, rate, 1);
+    assert_eq!(c.capped, 0, "{c:?}");
+    // The snap's sample is the step's error: first figure 0.033 V.
+    let worst = largest_difference(&whole, &fine);
+    assert!(worst < 0.05, "{worst:e}");
+    let modal = Modal::new(&sys);
+    let mut live = Live::new(
+        &sys,
+        &modal,
+        1.0 / rate,
+        1,
+        &vec![true; sys.slots.len()],
+        &[1],
+    );
+    let mut out = Vec::new();
+    for k in 1..=fine.len() {
+        live.step(&[1.0, latch_input(k as f64, rate)]);
+        out.push(live.y[live.probe_at(0)]);
+    }
+    assert_eq!(live.counters.capped, 0, "{:?}", live.counters);
+    let worst = largest_difference(&out, &fine);
+    assert!(worst < 0.05, "{worst:e}");
+}
+
+#[test]
+fn a_sample_whose_newton_solve_fails_is_taken_again_in_sub_steps() {
+    // At 8 kHz the latch's snap fails one whole sample (its Newton solve stops at its cap, on
+    // the full stepper as on the live engine). With the retry the live engine takes it again
+    // in 64 sub-steps and follows the full stepper at 1/1024 of the sample (at 1/64 and 1/256
+    // that fails one step too: at the latch's fold its transistors, not its 10 pF, rule a step
+    // of a microsecond).
+    let sys = latch();
+    let rate = 8_000.0;
+    let (fine, c) = latch_full(&sys, rate, 1024);
+    assert_eq!(c.capped, 0, "{c:?}");
+    let modal = Modal::new(&sys);
+    let none = vec![false; sys.slots.len()];
+    let mut runs = Vec::new();
+    for retry in [false, true] {
+        let mut live = Live::with_levels(
+            &sys,
+            &modal,
+            1.0 / rate,
+            (1, 1, 1, 64),
+            &vec![true; sys.slots.len()],
+            &none,
+            &none,
+            &[1],
+        );
+        live.set_retry(retry);
+        let mut out = Vec::new();
+        for k in 1..=fine.len() {
+            live.step(&[1.0, latch_input(k as f64, rate)]);
+            out.push(live.y[live.probe_at(0)]);
+        }
+        runs.push((out, live.counters.clone()));
+    }
+    let (_, without) = &runs[0];
+    assert!(without.capped > 0, "{without:?}");
+    let (out, with) = &runs[1];
+    assert_eq!(with.capped, 0, "{with:?}");
+    assert_eq!(with.resteps, without.capped, "{with:?}");
+    // First figure 3.1e-4 V (of a 15 V swing).
+    let worst = largest_difference(out, &fine);
+    assert!(worst < 5e-4, "{worst:e}");
 }

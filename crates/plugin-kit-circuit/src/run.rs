@@ -525,13 +525,19 @@ impl Stepper {
                 v_lim.copy_from_slice(&v);
                 for s in &self.slots {
                     let lims = limits(&s.dev);
-                    for c in 0..s.nv {
-                        let i = s.v_off + c;
-                        let step = damped(-dv[i], &mut self.step_prev[i]);
-                        let (vn, l) = limit(lims[c], v[i] + step, v[i], self.vt);
-                        limited |= l;
-                        big = big.max((vn - v[i]).abs() / (1e-9 + 1e-9 * vn.abs()));
-                        v_lim[i] = vn;
+                    let at = s.v_off..s.v_off + s.nv;
+                    for i in at.clone() {
+                        v_lim[i] = v[i] + damped(-dv[i], &mut self.step_prev[i]);
+                    }
+                    limited |= limit_controls(
+                        &s.dev,
+                        &lims,
+                        &mut v_lim[at.clone()],
+                        &v[at.clone()],
+                        self.vt,
+                    );
+                    for i in at {
+                        big = big.max((v_lim[i] - v[i]).abs() / (1e-9 + 1e-9 * v_lim[i].abs()));
                     }
                 }
                 if !limited && big < 1.0 {
@@ -763,6 +769,8 @@ pub fn limits(d: &Dev) -> Vec<Lim> {
     use Lim::*;
     match d {
         Dev::Bjt(_) | Dev::Jfet(_) => vec![Junction, Junction],
+        // (A MOS transistor's controls are limited together, `limit_controls`; these set
+        // how far its controls may move before the live engine's Jacobian is made again.)
         Dev::Mos(_) => vec![Step(0.5), Step(0.5), Junction, Junction],
         Dev::Diode(_) => vec![Junction],
         Dev::Ota(p) => vec![Junction, Tanh(0.0, 1.0 / p.k)],
@@ -812,6 +820,23 @@ pub fn limit(lim: Lim, vnew: f64, vold: f64, vt: f64) -> (f64, bool) {
             }
         }
     }
+}
+
+/// A device's controls `new` for one Newton iteration limited from `old` (`lims`, its
+/// [`limits`]), each alone, but a MOS transistor's together as `mos1load.c` limits them
+/// ([`crate::dev::MosP::limit`]: its four controls are three voltages). Whether any moved.
+#[inline]
+pub fn limit_controls(dev: &Dev, lims: &[Lim], new: &mut [f64], old: &[f64], vt: f64) -> bool {
+    if let Dev::Mos(m) = dev {
+        return m.limit(new, old);
+    }
+    let mut limited = false;
+    for c in 0..new.len() {
+        let (v, l) = limit(lims[c], new[c], old[c], vt);
+        new[c] = v;
+        limited |= l;
+    }
+    limited
 }
 
 /// ngspice's junction limiting (devsup.c `DEVpnjlim`), its reverse steps too.

@@ -1358,3 +1358,30 @@ engine it fails by 2 %).
 **Not tried:** the TR-808 on the kit's crate (its own branch, next); the MS-20's first use.
 
 **Merged** on the owner's go, 2026-11-07: "yes, please merge".
+
+## K-CIRCUIT-MS20. What the MS-20 needs of `plugin-kit-circuit`: MOS level 1, a JFET's PB and contacts, the op-amp's slew load and clamp
+
+**Agent decision, 2026-11-07,** for the MS-20, the crate's second instrument (its real-time stage;
+K-CIRCUIT's review listed what its device cards need). Each addition leaves every existing card's
+behaviour as it was, so the TR-808's renders do not move:
+
+- **MOS level 1** (`devices::Mos`, `dev::MosP`, `part::Kind::M`, drain, gate, source, bulk;
+  `Library::mos`): ngspice's `mos1load.c` with GAMMA 0, the channel's Shichman-Hodges current in
+  normal and inverse mode, and the bulk-source and bulk-drain junctions with ngspice's own branches
+  (`is (e^(v / vt) - 1) + gmin v` above -3 vt, `gmin v - is` below). Left out, with its bound: the
+  gate's Meyer charge from TOX (about 0.35 fF for the MS-20's CD4007 at W = L = 1 um, against the
+  10 pF its cards give each input). Its controls are stepped by at most 0.5 V a Newton iteration
+  (vgs, vds) and its junctions limited as SPICE's.
+- **A JFET's built-in potential and ohmic contacts** (`Jfet::pb`, `rd`, `rs`): the gate junctions'
+  depletion charge takes the card's PB instead of the fixed 1 V; RD and RS are internal drain and
+  source nodes, as ngspice adds them. The TR-808's cards: PB 1, no contacts.
+- **The op-amp's slew load and clamp** (`OpAmp::sr_load`, `clamp_g`, `clamp_knee`): the internal
+  current limit is `sr cx (1 + rout / sr_load)`, as the MS-20's macromodel writes it; the clamp's
+  conductance and knee are the card's instead of `sim::OPAMP_CLAMP_G` and `OPAMP_CLAMP_KNEE` (0.1 S,
+  0.02 V; the MS-20's 0.01 S, 0.01 V). The TR-808's cards: `sr_load` infinite, the old constants.
+
+**Tested:** the MOS device's Jacobian against central differences in every region and both
+polarities, its P-channel the N-channel's mirror to the bit; the JFET's with PB 2 and its depletion
+charge's ratio to PB 1's; the op-amp's limit with a slew load; a CMOS inverter through the whole
+pipeline (half its supply in, half out within 1 uV; at either rail within 1 uV of the other); the
+sixteen tests pass, clippy and rustfmt clean, on Linux.

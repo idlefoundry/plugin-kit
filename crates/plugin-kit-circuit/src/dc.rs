@@ -29,6 +29,7 @@ fn dc_limits(d: &crate::dev::Dev) -> Vec<crate::run::Lim> {
     use crate::run::Lim::*;
     match d {
         Dev::Bjt(_) | Dev::Jfet(_) => vec![Junction, Junction],
+        Dev::Mos(_) => vec![Step(0.5), Step(0.5), Junction, Junction],
         Dev::Diode(_) => vec![Junction],
         Dev::Ota(_) => vec![Junction, Step(0.05)],
         Dev::OpIn(_) => vec![Step(0.05)],

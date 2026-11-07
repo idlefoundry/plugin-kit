@@ -549,7 +549,18 @@ impl Net {
                         .copied()
                         .find(|j| j.name == *name)
                         .unwrap_or_else(|| panic!("no JFET model {name}"));
-                    let (nd, ng, ns) = (nodes[0], nodes[1], nodes[2]);
+                    let (mut nd, ng, mut ns) = (nodes[0], nodes[1], nodes[2]);
+                    // The ohmic contacts, as ngspice adds them: internal drain and source nodes.
+                    if m.rd > 0.0 {
+                        let di = Node::Unknown(b.internal(format!("x_{}#drain", el(p))));
+                        b.cond(nd, di, 1.0 / m.rd);
+                        nd = di;
+                    }
+                    if m.rs > 0.0 {
+                        let si = Node::Unknown(b.internal(format!("x_{}#source", el(p))));
+                        b.cond(ns, si, 1.0 / m.rs);
+                        ns = si;
+                    }
                     let vgs = b.lin(ng).minus(&b.lin(ns));
                     let vgd = b.lin(ng).minus(&b.lin(nd));
                     let id = Builder::inj(nd, ns);
@@ -561,6 +572,30 @@ impl Net {
                         Dev::Jfet(dev::JfetP::new(m)),
                         vec![vgs, vgd],
                         vec![id, gs.clone(), gd.clone(), gs, gd],
+                    );
+                }
+                Kind::M(name) => {
+                    let m = b
+                        .library
+                        .mos
+                        .iter()
+                        .copied()
+                        .find(|m| m.name == *name)
+                        .unwrap_or_else(|| panic!("no MOS model {name}"));
+                    let (nd, ng, ns, nb) = (nodes[0], nodes[1], nodes[2], nodes[3]);
+                    let vgs = b.lin(ng).minus(&b.lin(ns));
+                    let vds = b.lin(nd).minus(&b.lin(ns));
+                    let vbs = b.lin(nb).minus(&b.lin(ns));
+                    let vbd = b.lin(nb).minus(&b.lin(nd));
+                    let id = Builder::inj(nd, ns);
+                    let bs = Builder::inj(nb, ns);
+                    let bd = Builder::inj(nb, nd);
+                    b.elem(
+                        p,
+                        "",
+                        Dev::Mos(dev::MosP::new(m)),
+                        vec![vgs, vds, vbs, vbd],
+                        vec![id, bs, bd],
                     );
                 }
                 Kind::OpAmp(name) => {
@@ -593,8 +628,8 @@ impl Net {
                         p,
                         "clamp",
                         Dev::Clamp(dev::Clamp {
-                            g: sim::OPAMP_CLAMP_G,
-                            knee: sim::OPAMP_CLAMP_KNEE,
+                            g: o.clamp_g,
+                            knee: o.clamp_knee,
                         }),
                         vec![hi, lo],
                         vec![Builder::inj(x, Node::Ground)],

@@ -3,7 +3,7 @@
 //! it.
 
 use crate::dc::operating_point;
-use crate::devices::{Bjt, Diode, Library, fixtures};
+use crate::devices::{Bjt, Diode, Library, Mos, fixtures};
 use crate::net::{Circuit, Net, Opts};
 use crate::part::{Kind, Part};
 use crate::run::Stepper;
@@ -166,4 +166,54 @@ fn a_common_emitter_stage_obeys_kirchhoff_and_its_small_signal_gain() {
         (gain / expected - 1.0).abs() < 0.003,
         "small-signal gain {gain}, its closed form {expected}"
     );
+}
+
+#[test]
+fn a_cmos_inverter_switches_at_half_its_supply_and_sits_at_its_rails() {
+    // A symmetric pair: the same KP W / L and channel-length modulation, thresholds +-1.5 V,
+    // each bulk at its rail.
+    static N: Mos = Mos {
+        name: "TEST_N",
+        pmos: false,
+        vto: 1.5,
+        beta: 0.36e-3,
+        lambda: 0.01,
+        is: 1e-14,
+    };
+    static P: Mos = Mos {
+        name: "TEST_P",
+        pmos: true,
+        vto: -1.5,
+        ..N
+    };
+    static MOS: [&Mos; 2] = [&N, &P];
+    let parts = [
+        part("MN", Kind::M(N.name), &["out", "@in", "0", "0"]),
+        part("MP", Kind::M(P.name), &["out", "@in", "@vdd", "@vdd"]),
+        part("CL", Kind::C(10e-12), &["out", "0"]),
+    ];
+    let circuit = Circuit {
+        library: Library {
+            mos: &MOS,
+            ..Default::default()
+        },
+        rails: vec![("vdd".to_string(), 15.0)],
+    };
+    let net = Net::build(&parts, &opts(&["in"]), &circuit);
+    let out = |vin: f64| {
+        let u = [1.0, vin];
+        let op = operating_point(&net, &u).expect("operating point");
+        *System::new(&net, &op, &u, &["t_out"])
+            .y0
+            .last()
+            .expect("the probe")
+    };
+    // At half the supply each device is the other's mirror image: the output is there too.
+    assert!((out(7.5) - 7.5).abs() < 1e-6, "{}", out(7.5));
+    // Off, each rail is reached within what the off device's junction leakage and GMIN draw.
+    assert!((out(0.0) - 15.0).abs() < 1e-6, "{}", out(0.0));
+    assert!(out(15.0).abs() < 1e-6, "{}", out(15.0));
+    // Between, the output falls as the input rises.
+    let (a, b) = (out(6.0), out(9.0));
+    assert!(a > 7.5 && b < 7.5 && a > b, "{a} {b}");
 }

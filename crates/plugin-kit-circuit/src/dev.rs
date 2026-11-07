@@ -10,7 +10,7 @@
 //! charges (whose currents are their time derivatives). [`Dev::eval`] gives the outputs and
 //! their Jacobian.
 
-use crate::devices::{Bjt, Comparator, Diode, Jfet, OpAmp, Ota, Schmitt};
+use crate::devices::{Bjt, Comparator, Diode, Jfet, Mos, OpAmp, Ota, Schmitt};
 use crate::sim;
 
 /// ngspice's Boltzmann constant and electron charge (`const.h`).
@@ -356,8 +356,8 @@ impl JfetP {
             lambda: j.lambda,
             is: j.is,
             vt: vt(),
-            gs: Depletion::new(j.cgs, 1.0, 0.5),
-            gd: Depletion::new(j.cgd, 1.0, 0.5),
+            gs: Depletion::new(j.cgs, j.pb, 0.5),
+            gd: Depletion::new(j.cgd, j.pb, 0.5),
         }
     }
 
@@ -447,6 +447,94 @@ impl JfetP {
     }
 }
 
+/// A MOS transistor (`devices::Mos`): controls `[vgs, vds, vbs, vbd]`; outputs the channel's
+/// current from drain to source, the bulk-source and the bulk-drain junctions' currents (from
+/// the bulk). Evaluated as `mos1load.c` does, in the device's own polarity (each voltage and
+/// current times its type, +1 N-channel, -1 P-channel): the channel in normal mode for
+/// vds >= 0 and inverse mode otherwise, each junction `is (e^(v / vt) - 1) + gmin v` above
+/// -3 vt and `gmin v - is` below.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MosP {
+    sign: f64,
+    von: f64,
+    beta: f64,
+    lambda: f64,
+    is: f64,
+    vt: f64,
+}
+
+impl MosP {
+    pub fn new(m: &Mos) -> MosP {
+        let sign = if m.pmos { -1.0 } else { 1.0 };
+        MosP {
+            sign,
+            von: sign * m.vto,
+            beta: m.beta,
+            lambda: m.lambda,
+            is: m.is,
+            vt: vt(),
+        }
+    }
+
+    /// The channel's current in normal mode (vds >= 0) and its derivatives in vgs and vds.
+    fn channel(&self, vgs: f64, vds: f64) -> (f64, f64, f64) {
+        let vgst = vgs - self.von;
+        if vgst <= 0.0 {
+            return (0.0, 0.0, 0.0);
+        }
+        let betap = self.beta * (1.0 + self.lambda * vds);
+        if vgst <= vds {
+            (
+                betap * vgst * vgst * 0.5,
+                betap * vgst,
+                self.lambda * self.beta * vgst * vgst * 0.5,
+            )
+        } else {
+            (
+                betap * vds * (vgst - 0.5 * vds),
+                betap * vds,
+                betap * (vgst - vds) + self.lambda * self.beta * vds * (vgst - 0.5 * vds),
+            )
+        }
+    }
+
+    fn junction(&self, v: f64) -> (f64, f64) {
+        if v <= -3.0 * self.vt {
+            (GMIN * v - self.is, GMIN)
+        } else {
+            let e = libm::exp(v / self.vt);
+            (self.is * (e - 1.0) + GMIN * v, self.is * e / self.vt + GMIN)
+        }
+    }
+
+    #[inline]
+    pub fn eval(&self, v: &[f64], out: &mut [f64], jac: &mut [f64]) {
+        let t = self.sign;
+        let (vgs, vds, vbs, vbd) = (t * v[0], t * v[1], t * v[2], t * v[3]);
+        // In the device's polarity; each output is t times its value there, and each
+        // derivative t * t = 1 times its value there.
+        let (id, did_vgs, did_vds) = if vds >= 0.0 {
+            self.channel(vgs, vds)
+        } else {
+            // Inverse mode: the drain acts as the source. id(vgs, vds) = -f(vgs - vds, -vds).
+            let (f, fg, fd) = self.channel(vgs - vds, -vds);
+            (-f, -fg, fg + fd)
+        };
+        let (ibs, gbs) = self.junction(vbs);
+        let (ibd, gbd) = self.junction(vbd);
+        out[0] = t * id;
+        out[1] = t * ibs;
+        out[2] = t * ibd;
+        for x in jac[..12].iter_mut() {
+            *x = 0.0;
+        }
+        jac[0] = did_vgs;
+        jac[1] = did_vds;
+        jac[6] = gbs;
+        jac[11] = gbd;
+    }
+}
+
 /// The op-amp's input stage: control `[vp - vn]`, output the current into its internal node,
 /// `imax tanh(gm vd / imax)`.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -461,7 +549,7 @@ impl OpIn {
         let cx = gm / (2.0 * std::f64::consts::PI * o.gbw);
         OpIn {
             gm,
-            imax: o.sr * cx,
+            imax: o.sr * cx * (1.0 + o.rout / o.sr_load),
         }
     }
 }
@@ -555,6 +643,7 @@ pub enum Dev {
     Schmitt(SchmittP),
     Cmp(CmpP),
     Ota(OtaP),
+    Mos(MosP),
 }
 
 impl Dev {
@@ -570,6 +659,7 @@ impl Dev {
             Dev::Schmitt(_) => (4, 3, 0),
             Dev::Cmp(_) => (5, 2, 0),
             Dev::Ota(_) => (2, 2, 0),
+            Dev::Mos(_) => (4, 3, 0),
         }
     }
 
@@ -585,6 +675,7 @@ impl Dev {
             Dev::Bjt(p) => p.eval(v, out, jac),
             Dev::Diode(p) => p.eval(v, out, jac),
             Dev::Jfet(p) => p.eval(v, out, jac),
+            Dev::Mos(p) => p.eval(v, out, jac),
             Dev::OpIn(p) => {
                 let x = p.gm * v[0] / p.imax;
                 let t = libm::tanh(x);
@@ -782,5 +873,84 @@ mod tests {
         p.eval(&[-d.bv_eb], &mut o, &mut j);
         assert!((o[0] + 1e-5).abs() < 2e-9, "{}", o[0]);
         assert!(p.breakdown() > 6.4 && p.breakdown() < 6.6);
+    }
+
+    /// Two cards for the MOS device's tests (a CMOS gate's pair, as an instrument would write
+    /// them): N- and P-channel, thresholds 1.5 V, KP W / L 0.36 mA/V^2.
+    const NMOS: Mos = Mos {
+        name: "TEST_N",
+        pmos: false,
+        vto: 1.5,
+        beta: 0.36e-3,
+        lambda: 0.01,
+        is: 1e-14,
+    };
+    const PMOS: Mos = Mos {
+        name: "TEST_P",
+        pmos: true,
+        vto: -1.5,
+        ..NMOS
+    };
+
+    #[test]
+    fn the_mos_devices_jacobians_match_differences() {
+        // [vgs, vds, vbs, vbd]: cut off, linear, saturated, inverse mode, the bulk junctions
+        // reverse and forward (away from ngspice's -3 vt switch, where the current is not
+        // continuous).
+        let pts: Vec<Vec<f64>> = [
+            [0.5, 5.0, 0.0, -5.0],
+            [5.0, 1.0, -1.0, -2.0],
+            [5.0, 8.0, -0.5, -8.5],
+            [5.0, -2.0, -3.0, -1.0],
+            [3.0, -6.0, 0.6, 6.6],
+            [-5.0, -1.0, 0.65, 1.65],
+        ]
+        .iter()
+        .map(|p| p.to_vec())
+        .collect();
+        check(Dev::Mos(MosP::new(&NMOS)), &pts);
+        let neg: Vec<Vec<f64>> = pts.iter().map(|p| p.iter().map(|x| -x).collect()).collect();
+        check(Dev::Mos(MosP::new(&PMOS)), &neg);
+        // A P-channel device is the N-channel one with every voltage and current negated.
+        let (mut on, mut op) = ([0.0; 3], [0.0; 3]);
+        let mut jac = [0.0; 12];
+        for (p, n) in pts.iter().zip(&neg) {
+            Dev::Mos(MosP::new(&NMOS)).eval(p, &mut on, &mut jac);
+            Dev::Mos(MosP::new(&PMOS)).eval(n, &mut op, &mut jac);
+            for k in 0..3 {
+                assert_eq!(op[k], -on[k], "{p:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_jfets_built_in_potential_and_the_op_amps_slew_load_are_the_cards() {
+        let pts: Vec<Vec<f64>> = [[-1.0, -6.0], [0.2, -0.5], [-0.3, 0.1]]
+            .iter()
+            .map(|p| p.to_vec())
+            .collect();
+        let j = Jfet {
+            pb: 2.0,
+            ..dv::J2SK30AY
+        };
+        check(Dev::Jfet(JfetP::new(&j)), &pts);
+        // The gate's depletion charge follows PB: a reverse-biased junction holds less charge
+        // per volt with the larger potential.
+        let (mut o1, mut o2) = ([0.0; 5], [0.0; 5]);
+        let mut jac = [0.0; 10];
+        Dev::Jfet(JfetP::new(&dv::J2SK30AY)).eval(&[-5.0, -5.0], &mut o1, &mut jac);
+        let c1 = jac[6];
+        Dev::Jfet(JfetP::new(&j)).eval(&[-5.0, -5.0], &mut o2, &mut jac);
+        let c2 = jac[6];
+        let expected = ((1.0_f64 + 5.0 / 1.0) / (1.0 + 5.0 / 2.0)).sqrt();
+        assert!((c2 / c1 / expected - 1.0).abs() < 1e-12, "{c1:e} {c2:e}");
+        // The op-amp's slew load raises the internal current limit by 1 + rout / sr_load.
+        let a = OpIn::new(&dv::OA4558);
+        let loaded = OpIn::new(&OpAmp {
+            sr_load: 2e3,
+            ..dv::OA4558
+        });
+        let k = 1.0 + dv::OA4558.rout / 2e3;
+        assert!((loaded.imax / a.imax / k - 1.0).abs() < 1e-15);
     }
 }

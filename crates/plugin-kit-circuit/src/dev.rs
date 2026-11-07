@@ -447,15 +447,16 @@ impl JfetP {
     }
 }
 
-/// A MOS transistor (`devices::Mos`): controls `[vgs, vds, vbs, vbd]`; outputs the channel's
-/// current from drain to source, the bulk-source and the bulk-drain junctions' currents (from
-/// the bulk). Evaluated as `mos1load.c` does, in the device's own polarity (each voltage and
-/// current times its type, +1 N-channel, -1 P-channel): the channel in normal mode for
-/// vds >= 0 and inverse mode otherwise, each junction `is (e^(v / vt) - 1) + gmin v` above
-/// -3 vt and `gmin v - is` below.
+/// A MOS transistor (`devices::Mos`), in its own polarity as `mos1load.c` works (every voltage
+/// and current times the device's type, +1 N-channel, -1 P-channel; the network gives it its
+/// controls and takes its outputs so, so that a junction's forward direction is positive for
+/// Newton's limiting whatever the type): controls `[vgs, vds, vbs, vbd]`; outputs the channel's
+/// current from drain to source and the bulk-source and bulk-drain junctions' currents (from the
+/// bulk). The channel in normal mode for vds >= 0 and inverse mode otherwise; each junction
+/// `is (e^(v / vt) - 1) + gmin v` above -3 vt, its exponent's argument capped at 709 as
+/// ngspice's `MAX_EXP_ARG`, and `gmin v - is` below.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MosP {
-    sign: f64,
     von: f64,
     beta: f64,
     lambda: f64,
@@ -465,10 +466,8 @@ pub struct MosP {
 
 impl MosP {
     pub fn new(m: &Mos) -> MosP {
-        let sign = if m.pmos { -1.0 } else { 1.0 };
         MosP {
-            sign,
-            von: sign * m.vto,
+            von: m.type_sign() * m.vto,
             beta: m.beta,
             lambda: m.lambda,
             is: m.is,
@@ -502,17 +501,14 @@ impl MosP {
         if v <= -3.0 * self.vt {
             (GMIN * v - self.is, GMIN)
         } else {
-            let e = libm::exp(v / self.vt);
+            let e = libm::exp((v / self.vt).min(709.0));
             (self.is * (e - 1.0) + GMIN * v, self.is * e / self.vt + GMIN)
         }
     }
 
     #[inline]
     pub fn eval(&self, v: &[f64], out: &mut [f64], jac: &mut [f64]) {
-        let t = self.sign;
-        let (vgs, vds, vbs, vbd) = (t * v[0], t * v[1], t * v[2], t * v[3]);
-        // In the device's polarity; each output is t times its value there, and each
-        // derivative t * t = 1 times its value there.
+        let (vgs, vds, vbs, vbd) = (v[0], v[1], v[2], v[3]);
         let (id, did_vgs, did_vds) = if vds >= 0.0 {
             self.channel(vgs, vds)
         } else {
@@ -522,9 +518,9 @@ impl MosP {
         };
         let (ibs, gbs) = self.junction(vbs);
         let (ibd, gbd) = self.junction(vbd);
-        out[0] = t * id;
-        out[1] = t * ibs;
-        out[2] = t * ibd;
+        out[0] = id;
+        out[1] = ibs;
+        out[2] = ibd;
         for x in jac[..12].iter_mut() {
             *x = 0.0;
         }
@@ -909,16 +905,127 @@ mod tests {
         .map(|p| p.to_vec())
         .collect();
         check(Dev::Mos(MosP::new(&NMOS)), &pts);
-        let neg: Vec<Vec<f64>> = pts.iter().map(|p| p.iter().map(|x| -x).collect()).collect();
-        check(Dev::Mos(MosP::new(&PMOS)), &neg);
-        // A P-channel device is the N-channel one with every voltage and current negated.
-        let (mut on, mut op) = ([0.0; 3], [0.0; 3]);
-        let mut jac = [0.0; 12];
-        for (p, n) in pts.iter().zip(&neg) {
-            Dev::Mos(MosP::new(&NMOS)).eval(p, &mut on, &mut jac);
-            Dev::Mos(MosP::new(&PMOS)).eval(n, &mut op, &mut jac);
+        // In its own polarity a P-channel device is the N-channel one: the network flips its
+        // controls and currents (`net.rs`), so that Newton's junction limiting sees a junction's
+        // forward direction as positive whatever the type.
+        assert_eq!(MosP::new(&PMOS), MosP::new(&NMOS));
+        // ngspice caps the junctions' exponent: a 20 V forward excursion stays finite.
+        let (mut out, mut jac) = ([0.0; 3], [0.0; 12]);
+        Dev::Mos(MosP::new(&NMOS)).eval(&[5.0, 1.0, 20.0, 19.0], &mut out, &mut jac);
+        assert!(
+            out.iter().chain(&jac).all(|x| x.is_finite()),
+            "{out:?} {jac:?}"
+        );
+    }
+
+    /// ngspice 47's terminal currents (into the device: drain, source, bulk) for the two cards
+    /// above as the MS-20's CD4007 writes them (`LEVEL=1 VTO KP LAMBDA TOX=100n`, W = L = 1u),
+    /// each held at (vd, vg, vs, vb) by voltage sources (the P-channel's negated), from an
+    /// operating point (omarchy, ngspice 47, 2026-11-07; the deck in K-CIRCUIT-MS20): cut off,
+    /// linear, saturated, inverse linear, inverse saturated, the bulk-source junction forward,
+    /// the drain below the source, and deep in the linear region.
+    const NGSPICE_MOS: [(bool, [f64; 4], [f64; 3]); 16] = [
+        (false, [5.0, 0.5, 0.0, 0.0], [5.01e-12, -0.0, -5.01e-12]),
+        (true, [5.0, 0.5, 0.0, 0.0], [-5.01e-12, -0.0, 5.01e-12]),
+        (
+            false,
+            [1.0, 5.0, 0.0, -1.0],
+            [0.00109080000201, -0.00109079999899, -3.02e-12],
+        ),
+        (
+            true,
+            [1.0, 5.0, 0.0, -1.0],
+            [-0.00109080000201, 0.00109079999899, 3.02e-12],
+        ),
+        (
+            false,
+            [8.0, 5.0, 0.0, -0.5],
+            [0.00238140000851, -0.002381399999490001, -9.02e-12],
+        ),
+        (
+            true,
+            [8.0, 5.0, 0.0, -0.5],
+            [-0.002381400008510001, 0.00238139999949, 9.02e-12],
+        ),
+        (
+            false,
+            [0.0, 5.0, 2.0, 0.0],
+            [-0.001836, 0.00183600000201, -2.01e-12],
+        ),
+        (
+            true,
+            [0.0, 5.0, 2.0, 0.0],
+            [0.001836, -0.00183600000201, 2.01e-12],
+        ),
+        (
+            false,
+            [0.0, 4.0, 10.0, 0.0],
+            [-0.0012375, 0.00123750001001, -1.001e-11],
+        ),
+        (
+            true,
+            [0.0, 4.0, 10.0, 0.0],
+            [0.0012375, -0.00123750001001, 1.001e-11],
+        ),
+        (
+            false,
+            [3.0, 0.0, 0.0, 0.6],
+            [2.41e-12, -0.0001387083995516999, 0.000138708397141701],
+        ),
+        (
+            true,
+            [3.0, 0.0, 0.0, 0.6],
+            [-2.41e-12, 0.0001387083995517, -0.0001387083971417006],
+        ),
+        (
+            false,
+            [-0.5, 5.0, 0.0, 0.0],
+            [-0.0006812047780550575, 6.783750e-04, 2.82977805505759e-06],
+        ),
+        (
+            true,
+            [-0.5, 5.0, 0.0, 0.0],
+            [
+                0.000681204778055057,
+                -0.0006783749999999999,
+                -2.829778055057586e-06,
+            ],
+        ),
+        (
+            false,
+            [12.0, 15.0, 0.0, 0.0],
+            [0.03628800001201, -0.036288, -1.201e-11],
+        ),
+        (
+            true,
+            [12.0, 15.0, 0.0, 0.0],
+            [-0.03628800001201, 0.036288, 1.201e-11],
+        ),
+    ];
+
+    #[test]
+    fn the_mos_devices_currents_are_ngspices() {
+        for (pmos, p, want) in NGSPICE_MOS {
+            let card = if pmos { PMOS } else { NMOS };
+            let t = card.type_sign();
+            // The terminals' voltages as the deck set them, then the device's own polarity.
+            let [vd, vg, vs, vb] = p.map(|x| t * x);
+            let v = [t * (vg - vs), t * (vd - vs), t * (vb - vs), t * (vb - vd)];
+            let (mut out, mut jac) = ([0.0; 3], [0.0; 12]);
+            Dev::Mos(MosP::new(&card)).eval(&v, &mut out, &mut jac);
+            let [id, ibs, ibd] = out;
+            // Into each terminal: the channel's current enters the drain and leaves the source;
+            // each junction's current leaves the bulk.
+            let got = [t * (id - ibd), t * (-id - ibs), t * (ibs + ibd)];
             for k in 0..3 {
-                assert_eq!(op[k], -on[k], "{p:?}");
+                let tol = 1e-12 * want[k].abs() + 1e-24;
+                assert!(
+                    (got[k] - want[k]).abs() <= tol,
+                    "{} at {p:?}, terminal {k}: {:e} A, ngspice {:e} A",
+                    if pmos { "P" } else { "N" },
+                    got[k],
+                    want[k]
+                );
             }
         }
     }

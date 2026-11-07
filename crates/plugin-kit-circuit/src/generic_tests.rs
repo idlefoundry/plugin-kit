@@ -3,7 +3,7 @@
 //! it.
 
 use crate::dc::operating_point;
-use crate::devices::{Bjt, Diode, Library, Mos, fixtures};
+use crate::devices::{Bjt, Diode, Jfet, Library, Mos, fixtures};
 use crate::net::{Circuit, Net, Opts};
 use crate::part::{Kind, Part};
 use crate::run::Stepper;
@@ -216,4 +216,133 @@ fn a_cmos_inverter_switches_at_half_its_supply_and_sits_at_its_rails() {
     // Between, the output falls as the input rises.
     let (a, b) = (out(6.0), out(9.0));
     assert!(a > 7.5 && b < 7.5 && a > b, "{a} {b}");
+}
+
+#[test]
+fn a_jfets_ohmic_contacts_and_built_in_potential_match_ngspice() {
+    // ngspice 47's drain node (omarchy, 2026-11-07; the deck in K-CIRCUIT-MS20, its rshunt the
+    // network's default and its tolerances tight): 15 V through 100 ohm into the drain, the
+    // source at ground through the card's 1 k contact, the gate at 0, -0.3 and -0.6 V.
+    static J: Jfet = Jfet {
+        name: "TEST_J",
+        vto: -0.8,
+        beta: 1.6e-3,
+        lambda: 0.005,
+        cgs: 5e-12,
+        cgd: 3e-12,
+        is: 1e-14,
+        pb: 2.0,
+        rd: 10.0,
+        rs: 1000.0,
+    };
+    static JFETS: [&Jfet; 1] = [&J];
+    let parts = [
+        part("R1", Kind::R(100.0), &["@vdd", "d"]),
+        part("J1", Kind::J(J.name), &["d", "@g", "0"]),
+    ];
+    let circuit = Circuit {
+        library: Library {
+            jfets: &JFETS,
+            ..Default::default()
+        },
+        rails: vec![("vdd".to_string(), 15.0)],
+    };
+    let net = Net::build(&parts, &opts(&["g"]), &circuit);
+    for (vg, want) in [
+        (0.0, 14.965_091_394_295_62),
+        (-0.3, 14.982_191_805_750_35),
+        (-0.6, 14.995_739_786_846_79),
+    ] {
+        let u = [1.0, vg];
+        let op = operating_point(&net, &u).expect("operating point");
+        let vd = *System::new(&net, &op, &u, &["t_d"])
+            .y0
+            .last()
+            .expect("the probe");
+        assert!(
+            (vd - want).abs() < 1e-9,
+            "gate {vg} V: drain {vd} V, ngspice {want} V"
+        );
+    }
+}
+
+#[test]
+fn a_loaded_cmos_inverters_step_converges_on_ngspice() {
+    // ngspice 47's output (Gear order 2, 0.05 us steps, reltol 1e-6; the deck in
+    // K-CIRCUIT-MS20) for the inverter above with 100 nF on its output, its input ramped from
+    // 0 to 15 V over the third sample at 192 kHz, every fourth sample from the first.
+    const NGSPICE: [f64; 15] = [
+        14.999999997,
+        12.479088444,
+        5.988536190,
+        2.442235505,
+        0.927171753,
+        0.342361688,
+        0.125122734,
+        0.045556467,
+        0.016564065,
+        0.006019586,
+        0.002187199,
+        0.000794661,
+        0.000288713,
+        0.000104895,
+        0.000038111,
+    ];
+    static N: Mos = Mos {
+        name: "TEST_N",
+        pmos: false,
+        vto: 1.5,
+        beta: 0.36e-3,
+        lambda: 0.01,
+        is: 1e-14,
+    };
+    static P: Mos = Mos {
+        name: "TEST_P",
+        pmos: true,
+        vto: -1.5,
+        ..N
+    };
+    static MOS: [&Mos; 2] = [&N, &P];
+    let parts = [
+        part("MN", Kind::M(N.name), &["out", "@in", "0", "0"]),
+        part("MP", Kind::M(P.name), &["out", "@in", "@vdd", "@vdd"]),
+        part("CL", Kind::C(100e-9), &["out", "0"]),
+    ];
+    let circuit = Circuit {
+        library: Library {
+            mos: &MOS,
+            ..Default::default()
+        },
+        rails: vec![("vdd".to_string(), 15.0)],
+    };
+    let net = Net::build(&parts, &opts(&["in"]), &circuit);
+    let u0 = [1.0, 0.0];
+    let op = operating_point(&net, &u0).expect("operating point");
+    let sys = System::new(&net, &op, &u0, &["t_out"]);
+    let mut errors = Vec::new();
+    for sub in [1usize, 2, 4, 8, 16] {
+        let h = 1.0 / 192_000.0 / sub as f64;
+        let mut s = Stepper::new(&sys, Modal::new(&sys), h);
+        let mut out = vec![*sys.y0.last().expect("the probe")];
+        for k in 1..=56 {
+            for j in 1..=sub {
+                // The input's ramp over the third sample, as the deck's PWL.
+                let f = ((k - 1) as f64 + j as f64 / sub as f64 - 2.0).clamp(0.0, 1.0);
+                s.step(&[1.0, 15.0 * f]);
+            }
+            out.push(*s.y.last().expect("the probe"));
+        }
+        let mut worst: f64 = 0.0;
+        for (i, want) in NGSPICE.iter().enumerate() {
+            assert!(out[4 * i].is_finite());
+            worst = worst.max((out[4 * i] - want).abs());
+        }
+        errors.push(worst);
+    }
+    // The stepper converges on ngspice at second order (0.41, 0.099, 0.023, 0.0058, 0.0014 V
+    // when written): a 15 V edge in under ten samples is its step's, not the devices', error.
+    for w in errors.windows(2) {
+        assert!(w[1] < w[0] / 3.5, "{errors:?}");
+    }
+    assert!(errors[4] < 2e-3, "{errors:?}");
 }

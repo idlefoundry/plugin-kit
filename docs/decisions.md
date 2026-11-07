@@ -1380,8 +1380,34 @@ behaviour as it was, so the TR-808's renders do not move:
   conductance and knee are the card's instead of `sim::OPAMP_CLAMP_G` and `OPAMP_CLAMP_KNEE` (0.1 S,
   0.02 V; the MS-20's 0.01 S, 0.01 V). The TR-808's cards: `sr_load` infinite, the old constants.
 
-**Tested:** the MOS device's Jacobian against central differences in every region and both
-polarities, its P-channel the N-channel's mirror to the bit; the JFET's with PB 2 and its depletion
-charge's ratio to PB 1's; the op-amp's limit with a slew load; a CMOS inverter through the whole
-pipeline (half its supply in, half out within 1 uV; at either rail within 1 uV of the other); the
-sixteen tests pass, clippy and rustfmt clean, on Linux.
+- **SPICE's `rshunt` as an option** (`Opts::rshunt`): the network has put 1e12 ohm from every node
+  to ground, as the TR-808's netlists write it; the MS-20's write none. `Some(sim::RSHUNT)` is the
+  default, so the TR-808's networks are unchanged; `None` leaves it out.
+
+**Reviewed** independently (another vendor's agent, given ngspice 47's source): the MOS equations,
+the JFET's PB and contacts and the op-amp's limit and clamp match ngspice and the MS-20's netlists;
+its findings are fixed: the P-channel's junction limiting had the wrong polarity (the network now
+gives the device its controls and takes its currents in its own polarity, as `mos1load.c` works,
+so a forward junction is positive for every type), the junctions' exponent lacked ngspice's cap at
+709, and the tests checked consistency more than fidelity (they now hold the device to ngspice's
+own numbers, below). Recorded, not changed: the JFET's gate leakage below -5 vt is constant here
+where ngspice's is a cubic extension below -3 vt (from the TR-808's engine; correcting it would move
+the TR-808's renders, so it waits for a change of its own).
+
+**Tested** against ngspice 47 (omarchy, 2026-11-07), its numbers kept in the tests:
+
+- **MOS:** both polarities' terminal currents at eight bias points (cut off, linear, saturated,
+  inverse linear and saturated, the bulk-source junction forward, deep linear) within 1e-12 of
+  ngspice's, from an operating point of cards written as the MS-20's CD4007's (`LEVEL=1 VTO=1.5
+  KP=0.36e-3 LAMBDA=0.01 TOX=100n`, W = L = 1u, each terminal held by a voltage source); the
+  Jacobian against central differences; a 20 V forward excursion finite.
+- **A JFET with contacts and PB 2** (`VTO=-0.8 BETA=1.6e-3 LAMBDA=0.005 PB=2 RD=10 RS=1000`), 15 V
+  through 100 ohm into its drain, its gate at 0, -0.3 and -0.6 V: the drain within 1e-12 V of
+  ngspice's (`rshunt=1e12`, RELTOL 1e-12).
+- **A CMOS inverter** of those MOS cards: switching at half its supply within 1 uV; and with 100 nF
+  on its output, its input ramped 0 to 15 V over the third sample at 192 kHz, against ngspice's
+  transient (Gear order 2, 0.05 us steps): the stepper converges on it at second order (0.41,
+  0.099, 0.023, 0.0058, 0.0014 V at 1, 2, 4, 8 and 16 times the rate), as a 15 V edge in under ten
+  samples is its step's error, not the device's.
+- The op-amp's limit with a slew load; every Jacobian; nineteen tests, clippy and rustfmt clean,
+  on Linux.

@@ -181,6 +181,13 @@ pub struct Mos {
     pub is: f64,
 }
 
+impl Mos {
+    /// The device's type as `mos1load.c` multiplies by it: +1 N-channel, -1 P-channel.
+    pub fn type_sign(&self) -> f64 {
+        if self.pmos { -1.0 } else { 1.0 }
+    }
+}
+
 /// The device cards a network is built with: every model a part may name, by its `name`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Library {

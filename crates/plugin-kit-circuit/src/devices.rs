@@ -70,6 +70,11 @@ pub struct Jfet {
     pub cgs: f64,
     pub cgd: f64,
     pub is: f64,
+    /// The gate junctions' built-in potential, V (ngspice's PB, 1 by default).
+    pub pb: f64,
+    /// The drain's and source's ohmic resistances, ohm (ngspice's RD and RS; 0: none).
+    pub rd: f64,
+    pub rs: f64,
 }
 
 /// An operational amplifier as a behavioural macromodel (mc-79's): a transconductance input
@@ -91,6 +96,13 @@ pub struct OpAmp {
     pub rout: f64,
     /// Input bias current into each input, A.
     pub ib: f64,
+    /// The load the slew rate is specified into, ohm: the internal node's current limit is
+    /// raised by (1 + rout / sr_load) so the output slews at `sr` into it (infinite: none).
+    pub sr_load: f64,
+    /// The clamp holding the internal node within the output's swing: its conductance, S, and
+    /// its knee, V (`sim::OPAMP_CLAMP_G` and `OPAMP_CLAMP_KNEE` are the TR-808's).
+    pub clamp_g: f64,
+    pub clamp_knee: f64,
 }
 
 /// One inverter of a CMOS hex Schmitt trigger, as a behavioural model: an input
@@ -152,6 +164,30 @@ pub struct Comparator {
     pub cout: f64,
 }
 
+/// A MOS transistor as ngspice's level 1 evaluates it (`mos1load.c`) with GAMMA 0 (no body
+/// effect) and without the gate's Meyer charge: the channel's Shichman-Hodges current, its
+/// source and drain swapping with the sign of vds, and the bulk-source and bulk-drain junctions.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Mos {
+    pub name: &'static str,
+    pub pmos: bool,
+    /// The threshold, V, signed as the SPICE card gives it (negative for a P-channel device).
+    pub vto: f64,
+    /// KP W / L, A/V^2.
+    pub beta: f64,
+    /// Channel-length modulation, 1/V.
+    pub lambda: f64,
+    /// The bulk junctions' saturation current, A (ngspice's IS, 1e-14 by default).
+    pub is: f64,
+}
+
+impl Mos {
+    /// The device's type as `mos1load.c` multiplies by it: +1 N-channel, -1 P-channel.
+    pub fn type_sign(&self) -> f64 {
+        if self.pmos { -1.0 } else { 1.0 }
+    }
+}
+
 /// The device cards a network is built with: every model a part may name, by its `name`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Library {
@@ -162,6 +198,7 @@ pub struct Library {
     pub schmitts: &'static [&'static Schmitt],
     pub otas: &'static [&'static Ota],
     pub comparators: &'static [&'static Comparator],
+    pub mos: &'static [&'static Mos],
 }
 
 impl Library {
@@ -278,6 +315,9 @@ pub(crate) mod fixtures {
         cgs: 5.6e-12,
         cgd: 2.6e-12,
         is: 1e-14,
+        pb: 1.0,
+        rd: 0.0,
+        rs: 0.0,
     };
 
     /// uPC4558C (NEC): mc-79's 4558 macromodel (its C8, NJM4558 typical values), the same part,
@@ -291,6 +331,9 @@ pub(crate) mod fixtures {
         vsat_neg: 1.0,
         rout: 75.0,
         ib: 60e-9,
+        sr_load: f64::INFINITY,
+        clamp_g: crate::sim::OPAMP_CLAMP_G,
+        clamp_knee: crate::sim::OPAMP_CLAMP_KNEE,
     };
 
     /// HD14584B (Hitachi): hex Schmitt trigger, at its VDD of about 5 V on the voicing board (Q9's

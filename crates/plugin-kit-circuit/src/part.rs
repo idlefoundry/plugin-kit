@@ -89,6 +89,8 @@ pub enum Kind {
     Ota(&'static str),
     /// One comparator of a quad open-collector comparator (+, -, out, VCC, GND).
     Comparator(&'static str),
+    /// MOS transistor of the named model (drain, gate, source, bulk).
+    M(&'static str),
     /// A closed switch contact or a wire link, ohm (a, b).
     Link(f64),
 }
@@ -99,7 +101,7 @@ impl Kind {
         match self {
             Kind::R(_) | Kind::C(_) | Kind::Ce(_) | Kind::Cbp(_) | Kind::D(_) | Kind::Link(_) => 2,
             Kind::Pot { .. } | Kind::Trim { .. } | Kind::Q(_) | Kind::J(_) => 3,
-            Kind::Schmitt(_) => 4,
+            Kind::Schmitt(_) | Kind::M(_) => 4,
             Kind::OpAmp(_) | Kind::Comparator(_) => 5,
             Kind::Ota(m) => library.ota(m).map_or(0, |o| o.pins.len()),
         }

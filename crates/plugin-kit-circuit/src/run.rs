@@ -763,6 +763,7 @@ pub fn limits(d: &Dev) -> Vec<Lim> {
     use Lim::*;
     match d {
         Dev::Bjt(_) | Dev::Jfet(_) => vec![Junction, Junction],
+        Dev::Mos(_) => vec![Step(0.5), Step(0.5), Junction, Junction],
         Dev::Diode(_) => vec![Junction],
         Dev::Ota(p) => vec![Junction, Tanh(0.0, 1.0 / p.k)],
         Dev::OpIn(p) => vec![Tanh(0.0, p.imax / p.gm)],

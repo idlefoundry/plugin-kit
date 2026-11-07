@@ -10,7 +10,7 @@
 //! charges (whose currents are their time derivatives). [`Dev::eval`] gives the outputs and
 //! their Jacobian.
 
-use crate::devices::{Bjt, Comparator, Diode, Jfet, OpAmp, Ota, Schmitt};
+use crate::devices::{Bjt, Comparator, Diode, Jfet, Mos, OpAmp, Ota, Schmitt};
 use crate::sim;
 
 /// ngspice's Boltzmann constant and electron charge (`const.h`).
@@ -356,8 +356,8 @@ impl JfetP {
             lambda: j.lambda,
             is: j.is,
             vt: vt(),
-            gs: Depletion::new(j.cgs, 1.0, 0.5),
-            gd: Depletion::new(j.cgd, 1.0, 0.5),
+            gs: Depletion::new(j.cgs, j.pb, 0.5),
+            gd: Depletion::new(j.cgd, j.pb, 0.5),
         }
     }
 
@@ -447,6 +447,90 @@ impl JfetP {
     }
 }
 
+/// A MOS transistor (`devices::Mos`), in its own polarity as `mos1load.c` works (every voltage
+/// and current times the device's type, +1 N-channel, -1 P-channel; the network gives it its
+/// controls and takes its outputs so, so that a junction's forward direction is positive for
+/// Newton's limiting whatever the type): controls `[vgs, vds, vbs, vbd]`; outputs the channel's
+/// current from drain to source and the bulk-source and bulk-drain junctions' currents (from the
+/// bulk). The channel in normal mode for vds >= 0 and inverse mode otherwise; each junction
+/// `is (e^(v / vt) - 1) + gmin v` above -3 vt, its exponent's argument capped at 709 as
+/// ngspice's `MAX_EXP_ARG`, and `gmin v - is` below.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MosP {
+    von: f64,
+    beta: f64,
+    lambda: f64,
+    is: f64,
+    vt: f64,
+}
+
+impl MosP {
+    pub fn new(m: &Mos) -> MosP {
+        MosP {
+            von: m.type_sign() * m.vto,
+            beta: m.beta,
+            lambda: m.lambda,
+            is: m.is,
+            vt: vt(),
+        }
+    }
+
+    /// The channel's current in normal mode (vds >= 0) and its derivatives in vgs and vds.
+    fn channel(&self, vgs: f64, vds: f64) -> (f64, f64, f64) {
+        let vgst = vgs - self.von;
+        if vgst <= 0.0 {
+            return (0.0, 0.0, 0.0);
+        }
+        let betap = self.beta * (1.0 + self.lambda * vds);
+        if vgst <= vds {
+            (
+                betap * vgst * vgst * 0.5,
+                betap * vgst,
+                self.lambda * self.beta * vgst * vgst * 0.5,
+            )
+        } else {
+            (
+                betap * vds * (vgst - 0.5 * vds),
+                betap * vds,
+                betap * (vgst - vds) + self.lambda * self.beta * vds * (vgst - 0.5 * vds),
+            )
+        }
+    }
+
+    fn junction(&self, v: f64) -> (f64, f64) {
+        if v <= -3.0 * self.vt {
+            (GMIN * v - self.is, GMIN)
+        } else {
+            let e = libm::exp((v / self.vt).min(709.0));
+            (self.is * (e - 1.0) + GMIN * v, self.is * e / self.vt + GMIN)
+        }
+    }
+
+    #[inline]
+    pub fn eval(&self, v: &[f64], out: &mut [f64], jac: &mut [f64]) {
+        let (vgs, vds, vbs, vbd) = (v[0], v[1], v[2], v[3]);
+        let (id, did_vgs, did_vds) = if vds >= 0.0 {
+            self.channel(vgs, vds)
+        } else {
+            // Inverse mode: the drain acts as the source. id(vgs, vds) = -f(vgs - vds, -vds).
+            let (f, fg, fd) = self.channel(vgs - vds, -vds);
+            (-f, -fg, fg + fd)
+        };
+        let (ibs, gbs) = self.junction(vbs);
+        let (ibd, gbd) = self.junction(vbd);
+        out[0] = id;
+        out[1] = ibs;
+        out[2] = ibd;
+        for x in jac[..12].iter_mut() {
+            *x = 0.0;
+        }
+        jac[0] = did_vgs;
+        jac[1] = did_vds;
+        jac[6] = gbs;
+        jac[11] = gbd;
+    }
+}
+
 /// The op-amp's input stage: control `[vp - vn]`, output the current into its internal node,
 /// `imax tanh(gm vd / imax)`.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -461,7 +545,7 @@ impl OpIn {
         let cx = gm / (2.0 * std::f64::consts::PI * o.gbw);
         OpIn {
             gm,
-            imax: o.sr * cx,
+            imax: o.sr * cx * (1.0 + o.rout / o.sr_load),
         }
     }
 }
@@ -555,9 +639,27 @@ pub enum Dev {
     Schmitt(SchmittP),
     Cmp(CmpP),
     Ota(OtaP),
+    Mos(MosP),
 }
 
 impl Dev {
+    /// The controls ngspice starts a junction device's first Newton iteration at in its
+    /// `MODEINITJCT` (`dioload.c`, `bjtload.c`, `jfetload.c`, `mos1load.c`), whatever the nodes'
+    /// voltages: a diode's and a transistor's emitter junction at their critical voltage
+    /// (`vte ln(vte / (sqrt 2 is))`), the collector junction at 0, a JFET's gate junctions at -1 V,
+    /// and a MOS transistor at its threshold with vds 0 and its bulk junctions at -1 V (in its own
+    /// polarity). `None` for the behavioural models, which ngspice evaluates at the nodes.
+    pub fn init_junctions(&self) -> Option<Vec<f64>> {
+        let vcrit = |vte: f64, is: f64| vte * libm::log(vte / (std::f64::consts::SQRT_2 * is));
+        match self {
+            Dev::Diode(d) => Some(vec![vcrit(d.vte, d.is)]),
+            Dev::Bjt(b) => Some(vec![vcrit(b.vt, b.is), 0.0]),
+            Dev::Jfet(_) => Some(vec![-1.0, -1.0]),
+            Dev::Mos(m) => Some(vec![m.von, 0.0, -1.0, -1.0]),
+            _ => None,
+        }
+    }
+
     /// (controls, static outputs, charge outputs).
     pub fn shape(&self) -> (usize, usize, usize) {
         match self {
@@ -570,6 +672,7 @@ impl Dev {
             Dev::Schmitt(_) => (4, 3, 0),
             Dev::Cmp(_) => (5, 2, 0),
             Dev::Ota(_) => (2, 2, 0),
+            Dev::Mos(_) => (4, 3, 0),
         }
     }
 
@@ -585,6 +688,7 @@ impl Dev {
             Dev::Bjt(p) => p.eval(v, out, jac),
             Dev::Diode(p) => p.eval(v, out, jac),
             Dev::Jfet(p) => p.eval(v, out, jac),
+            Dev::Mos(p) => p.eval(v, out, jac),
             Dev::OpIn(p) => {
                 let x = p.gm * v[0] / p.imax;
                 let t = libm::tanh(x);
@@ -782,5 +886,195 @@ mod tests {
         p.eval(&[-d.bv_eb], &mut o, &mut j);
         assert!((o[0] + 1e-5).abs() < 2e-9, "{}", o[0]);
         assert!(p.breakdown() > 6.4 && p.breakdown() < 6.6);
+    }
+
+    /// Two cards for the MOS device's tests (a CMOS gate's pair, as an instrument would write
+    /// them): N- and P-channel, thresholds 1.5 V, KP W / L 0.36 mA/V^2.
+    const NMOS: Mos = Mos {
+        name: "TEST_N",
+        pmos: false,
+        vto: 1.5,
+        beta: 0.36e-3,
+        lambda: 0.01,
+        is: 1e-14,
+    };
+    const PMOS: Mos = Mos {
+        name: "TEST_P",
+        pmos: true,
+        vto: -1.5,
+        ..NMOS
+    };
+
+    #[test]
+    fn the_mos_devices_jacobians_match_differences() {
+        // [vgs, vds, vbs, vbd]: cut off, linear, saturated, inverse mode, the bulk junctions
+        // reverse and forward (away from ngspice's -3 vt switch, where the current is not
+        // continuous).
+        let pts: Vec<Vec<f64>> = [
+            [0.5, 5.0, 0.0, -5.0],
+            [5.0, 1.0, -1.0, -2.0],
+            [5.0, 8.0, -0.5, -8.5],
+            [5.0, -2.0, -3.0, -1.0],
+            [3.0, -6.0, 0.6, 6.6],
+            [-5.0, -1.0, 0.65, 1.65],
+        ]
+        .iter()
+        .map(|p| p.to_vec())
+        .collect();
+        check(Dev::Mos(MosP::new(&NMOS)), &pts);
+        // In its own polarity a P-channel device is the N-channel one: the network flips its
+        // controls and currents (`net.rs`), so that Newton's junction limiting sees a junction's
+        // forward direction as positive whatever the type.
+        assert_eq!(MosP::new(&PMOS), MosP::new(&NMOS));
+        // ngspice caps the junctions' exponent: a 20 V forward excursion stays finite.
+        let (mut out, mut jac) = ([0.0; 3], [0.0; 12]);
+        Dev::Mos(MosP::new(&NMOS)).eval(&[5.0, 1.0, 20.0, 19.0], &mut out, &mut jac);
+        assert!(
+            out.iter().chain(&jac).all(|x| x.is_finite()),
+            "{out:?} {jac:?}"
+        );
+    }
+
+    /// ngspice 47's terminal currents (into the device: drain, source, bulk) for the two cards
+    /// above as the MS-20's CD4007 writes them (`LEVEL=1 VTO KP LAMBDA TOX=100n`, W = L = 1u),
+    /// each held at (vd, vg, vs, vb) by voltage sources (the P-channel's negated), from an
+    /// operating point (omarchy, ngspice 47, 2026-11-07; the deck in K-CIRCUIT-MS20): cut off,
+    /// linear, saturated, inverse linear, inverse saturated, the bulk-source junction forward,
+    /// the drain below the source, and deep in the linear region.
+    const NGSPICE_MOS: [(bool, [f64; 4], [f64; 3]); 16] = [
+        (false, [5.0, 0.5, 0.0, 0.0], [5.01e-12, -0.0, -5.01e-12]),
+        (true, [5.0, 0.5, 0.0, 0.0], [-5.01e-12, -0.0, 5.01e-12]),
+        (
+            false,
+            [1.0, 5.0, 0.0, -1.0],
+            [0.00109080000201, -0.00109079999899, -3.02e-12],
+        ),
+        (
+            true,
+            [1.0, 5.0, 0.0, -1.0],
+            [-0.00109080000201, 0.00109079999899, 3.02e-12],
+        ),
+        (
+            false,
+            [8.0, 5.0, 0.0, -0.5],
+            [0.00238140000851, -0.002381399999490001, -9.02e-12],
+        ),
+        (
+            true,
+            [8.0, 5.0, 0.0, -0.5],
+            [-0.002381400008510001, 0.00238139999949, 9.02e-12],
+        ),
+        (
+            false,
+            [0.0, 5.0, 2.0, 0.0],
+            [-0.001836, 0.00183600000201, -2.01e-12],
+        ),
+        (
+            true,
+            [0.0, 5.0, 2.0, 0.0],
+            [0.001836, -0.00183600000201, 2.01e-12],
+        ),
+        (
+            false,
+            [0.0, 4.0, 10.0, 0.0],
+            [-0.0012375, 0.00123750001001, -1.001e-11],
+        ),
+        (
+            true,
+            [0.0, 4.0, 10.0, 0.0],
+            [0.0012375, -0.00123750001001, 1.001e-11],
+        ),
+        (
+            false,
+            [3.0, 0.0, 0.0, 0.6],
+            [2.41e-12, -0.0001387083995516999, 0.000138708397141701],
+        ),
+        (
+            true,
+            [3.0, 0.0, 0.0, 0.6],
+            [-2.41e-12, 0.0001387083995517, -0.0001387083971417006],
+        ),
+        (
+            false,
+            [-0.5, 5.0, 0.0, 0.0],
+            [-0.0006812047780550575, 6.783750e-04, 2.82977805505759e-06],
+        ),
+        (
+            true,
+            [-0.5, 5.0, 0.0, 0.0],
+            [
+                0.000681204778055057,
+                -0.0006783749999999999,
+                -2.829778055057586e-06,
+            ],
+        ),
+        (
+            false,
+            [12.0, 15.0, 0.0, 0.0],
+            [0.03628800001201, -0.036288, -1.201e-11],
+        ),
+        (
+            true,
+            [12.0, 15.0, 0.0, 0.0],
+            [-0.03628800001201, 0.036288, 1.201e-11],
+        ),
+    ];
+
+    #[test]
+    fn the_mos_devices_currents_are_ngspices() {
+        for (pmos, p, want) in NGSPICE_MOS {
+            let card = if pmos { PMOS } else { NMOS };
+            let t = card.type_sign();
+            // The terminals' voltages as the deck set them, then the device's own polarity.
+            let [vd, vg, vs, vb] = p.map(|x| t * x);
+            let v = [t * (vg - vs), t * (vd - vs), t * (vb - vs), t * (vb - vd)];
+            let (mut out, mut jac) = ([0.0; 3], [0.0; 12]);
+            Dev::Mos(MosP::new(&card)).eval(&v, &mut out, &mut jac);
+            let [id, ibs, ibd] = out;
+            // Into each terminal: the channel's current enters the drain and leaves the source;
+            // each junction's current leaves the bulk.
+            let got = [t * (id - ibd), t * (-id - ibs), t * (ibs + ibd)];
+            for k in 0..3 {
+                let tol = 1e-12 * want[k].abs() + 1e-24;
+                assert!(
+                    (got[k] - want[k]).abs() <= tol,
+                    "{} at {p:?}, terminal {k}: {:e} A, ngspice {:e} A",
+                    if pmos { "P" } else { "N" },
+                    got[k],
+                    want[k]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_jfets_built_in_potential_and_the_op_amps_slew_load_are_the_cards() {
+        let pts: Vec<Vec<f64>> = [[-1.0, -6.0], [0.2, -0.5], [-0.3, 0.1]]
+            .iter()
+            .map(|p| p.to_vec())
+            .collect();
+        let j = Jfet {
+            pb: 2.0,
+            ..dv::J2SK30AY
+        };
+        check(Dev::Jfet(JfetP::new(&j)), &pts);
+        // The gate's depletion charge follows PB: a reverse-biased junction holds less charge
+        // per volt with the larger potential.
+        let (mut o1, mut o2) = ([0.0; 5], [0.0; 5]);
+        let mut jac = [0.0; 10];
+        Dev::Jfet(JfetP::new(&dv::J2SK30AY)).eval(&[-5.0, -5.0], &mut o1, &mut jac);
+        let c1 = jac[6];
+        Dev::Jfet(JfetP::new(&j)).eval(&[-5.0, -5.0], &mut o2, &mut jac);
+        let c2 = jac[6];
+        let expected = ((1.0_f64 + 5.0 / 1.0) / (1.0 + 5.0 / 2.0)).sqrt();
+        assert!((c2 / c1 / expected - 1.0).abs() < 1e-12, "{c1:e} {c2:e}");
+        // The op-amp's slew load raises the internal current limit by 1 + rout / sr_load.
+        let a = OpIn::new(&dv::OA4558);
+        let loaded = OpIn::new(&OpAmp {
+            sr_load: 2e3,
+            ..dv::OA4558
+        });
+        let k = 1.0 + dv::OA4558.rout / 2e3;
+        assert!((loaded.imax / a.imax / k - 1.0).abs() < 1e-15);
     }
 }

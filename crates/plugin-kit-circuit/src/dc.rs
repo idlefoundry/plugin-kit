@@ -29,6 +29,7 @@ fn dc_limits(d: &crate::dev::Dev) -> Vec<crate::run::Lim> {
     use crate::run::Lim::*;
     match d {
         Dev::Bjt(_) | Dev::Jfet(_) => vec![Junction, Junction],
+        Dev::Mos(_) => vec![Step(0.5), Step(0.5), Junction, Junction],
         Dev::Diode(_) => vec![Junction],
         Dev::Ota(_) => vec![Junction, Step(0.05)],
         Dev::OpIn(_) => vec![Step(0.05)],
@@ -39,9 +40,30 @@ fn dc_limits(d: &crate::dev::Dev) -> Vec<crate::run::Lim> {
     }
 }
 
-/// One Newton solve from `x0` at inputs `u`, a conductance `gshunt` from every node to ground;
+/// Where a Newton solve from no previous solution starts its junction devices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Init {
+    /// At the starting nodes' voltages (the engine's first users' operating points).
+    #[default]
+    Nodes,
+    /// As ngspice's `MODEINITJCT` ([`dev::Dev::init_junctions`]): the first iteration evaluates
+    /// each junction device at its starting junction voltages instead, so a junction between a
+    /// node starting at 0 V and a negative rail does not start far forward (from where Newton
+    /// comes down only one thermal voltage an iteration).
+    Junctions,
+}
+
+/// One Newton solve from `x0` at inputs `u`, a conductance `gshunt` from every node to ground,
+/// its junction devices first evaluated as `init` says when `fresh` (no previous solution);
 /// `None` if it does not converge.
-fn newton(net: &Net, u: &[f64], x0: &[f64], max_iter: usize, gshunt: f64) -> Option<Op> {
+fn newton_from(
+    net: &Net,
+    u: &[f64],
+    x0: &[f64],
+    max_iter: usize,
+    gshunt: f64,
+    init: Option<Init>,
+) -> Option<Op> {
     let n = net.n();
     let vt = dev::vt();
     let mut x = x0.to_vec();
@@ -50,6 +72,14 @@ fn newton(net: &Net, u: &[f64], x0: &[f64], max_iter: usize, gshunt: f64) -> Opt
         .elems
         .iter()
         .map(|e| e.ctrl.iter().map(|c| c.eval(&x, u)).collect())
+        .collect();
+    let start: Vec<Option<Vec<f64>>> = net
+        .elems
+        .iter()
+        .map(|e| match init {
+            Some(Init::Junctions) => e.dev.init_junctions(),
+            _ => None,
+        })
         .collect();
     let bu = net.bu.mul_vec(u);
     let mut out = [0.0; 8];
@@ -73,10 +103,18 @@ fn newton(net: &Net, u: &[f64], x0: &[f64], max_iter: usize, gshunt: f64) -> Opt
         for (k, e) in net.elems.iter().enumerate() {
             let (nv, ns, _nq) = e.dev.shape();
             let mut v: Vec<f64> = e.ctrl.iter().map(|c| c.eval(&x, u)).collect();
-            for (ci, lim) in dc_limits(&e.dev).into_iter().enumerate() {
-                let (vl, l) = crate::run::limit(lim, v[ci], vprev[k][ci], vt);
-                v[ci] = vl;
-                limited |= l;
+            match &start[k] {
+                Some(v0) if it == 0 => {
+                    v.clone_from(v0);
+                    limited = true;
+                }
+                _ => {
+                    for (ci, lim) in dc_limits(&e.dev).into_iter().enumerate() {
+                        let (vl, l) = crate::run::limit(lim, v[ci], vprev[k][ci], vt);
+                        v[ci] = vl;
+                        limited |= l;
+                    }
+                }
             }
             vprev[k].clone_from(&v);
             e.dev.eval(&v, &mut out, &mut jac);
@@ -147,10 +185,21 @@ fn newton(net: &Net, u: &[f64], x0: &[f64], max_iter: usize, gshunt: f64) -> Opt
     None
 }
 
-/// The operating point at inputs `u`.
+/// One Newton solve from a previous solution `x0`.
+fn newton(net: &Net, u: &[f64], x0: &[f64], max_iter: usize, gshunt: f64) -> Option<Op> {
+    newton_from(net, u, x0, max_iter, gshunt, None)
+}
+
+/// The operating point at inputs `u`, every fresh start's junctions at the nodes' voltages.
 pub fn operating_point(net: &Net, u: &[f64]) -> Result<Op, String> {
+    operating_point_with(net, u, Init::Nodes)
+}
+
+/// The operating point at inputs `u`, each fresh start (plain Newton, source stepping's first
+/// step, gmin stepping's first) with its junctions as `init` says.
+pub fn operating_point_with(net: &Net, u: &[f64], init: Init) -> Result<Op, String> {
     let n = net.n();
-    if let Some(op) = newton(net, u, &vec![0.0; n], 200, 0.0) {
+    if let Some(op) = newton_from(net, u, &vec![0.0; n], 200, 0.0, Some(init)) {
         return Ok(polish(net, u, op));
     }
     // Source stepping: every input scaled from a tenth up.
@@ -161,7 +210,8 @@ pub fn operating_point(net: &Net, u: &[f64]) -> Result<Op, String> {
     while lambda < 1.0 {
         let next = (lambda + step).min(1.0);
         let us: Vec<f64> = u.iter().map(|v| v * next).collect();
-        match newton(net, &us, &x, 100, 0.0) {
+        let fresh = (lambda == 0.0).then_some(init);
+        match newton_from(net, &us, &x, 100, 0.0, fresh) {
             Some(op) => {
                 x = op.x;
                 total += op.iters;
@@ -171,7 +221,7 @@ pub fn operating_point(net: &Net, u: &[f64]) -> Result<Op, String> {
             None => {
                 step /= 4.0;
                 if step < 1e-6 {
-                    return gmin_stepping(net, u)
+                    return gmin_stepping(net, u, init)
                         .map(|op| polish(net, u, op))
                         .ok_or_else(|| {
                             format!(
@@ -193,8 +243,8 @@ const GSHUNT_LAST: f64 = 1e-12;
 /// Gmin stepping: solved with a conductance from every node to ground, from
 /// [`GSHUNT_FIRST`] down tenfold a step (finer where a step fails) to [`GSHUNT_LAST`], each from
 /// the solution before, then without it; `None` if a step cannot be made.
-fn gmin_stepping(net: &Net, u: &[f64]) -> Option<Op> {
-    let mut op = newton(net, u, &vec![0.0; net.n()], 200, GSHUNT_FIRST)?;
+fn gmin_stepping(net: &Net, u: &[f64], init: Init) -> Option<Op> {
+    let mut op = newton_from(net, u, &vec![0.0; net.n()], 200, GSHUNT_FIRST, Some(init))?;
     let (mut g, mut factor, mut total) = (GSHUNT_FIRST, 10.0f64, op.iters);
     while g > GSHUNT_LAST {
         let next = (g / factor).max(GSHUNT_LAST);

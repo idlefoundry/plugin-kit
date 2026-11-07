@@ -147,6 +147,9 @@ pub struct Opts {
     pub held: Vec<String>,
     /// The panel pots as conductances the knobs set in real time (D41), not fixed resistors.
     pub live_pots: bool,
+    /// SPICE's `rshunt` from every node to ground, ohm, as an instrument's netlists write it
+    /// (the TR-808's [`sim::RSHUNT`], the default); `None` for netlists without one.
+    pub rshunt: Option<f64>,
     /// Transistors modelled behaviourally (D58), by (section, refdes): their junctions so many
     /// times softer, matched at so much current (`BjtP::soft`).
     pub soft: Vec<(String, String, f64, f64)>,
@@ -161,6 +164,7 @@ impl Default for Opts {
             cap_loss: sim::CapLoss::NONE,
             held: Vec::new(),
             live_pots: false,
+            rshunt: Some(sim::RSHUNT),
             soft: Vec::new(),
         }
     }
@@ -549,7 +553,18 @@ impl Net {
                         .copied()
                         .find(|j| j.name == *name)
                         .unwrap_or_else(|| panic!("no JFET model {name}"));
-                    let (nd, ng, ns) = (nodes[0], nodes[1], nodes[2]);
+                    let (mut nd, ng, mut ns) = (nodes[0], nodes[1], nodes[2]);
+                    // The ohmic contacts, as ngspice adds them: internal drain and source nodes.
+                    if m.rd > 0.0 {
+                        let di = Node::Unknown(b.internal(format!("x_{}#drain", el(p))));
+                        b.cond(nd, di, 1.0 / m.rd);
+                        nd = di;
+                    }
+                    if m.rs > 0.0 {
+                        let si = Node::Unknown(b.internal(format!("x_{}#source", el(p))));
+                        b.cond(ns, si, 1.0 / m.rs);
+                        ns = si;
+                    }
                     let vgs = b.lin(ng).minus(&b.lin(ns));
                     let vgd = b.lin(ng).minus(&b.lin(nd));
                     let id = Builder::inj(nd, ns);
@@ -561,6 +576,35 @@ impl Net {
                         Dev::Jfet(dev::JfetP::new(m)),
                         vec![vgs, vgd],
                         vec![id, gs.clone(), gd.clone(), gs, gd],
+                    );
+                }
+                Kind::M(name) => {
+                    let m = b
+                        .library
+                        .mos
+                        .iter()
+                        .copied()
+                        .find(|m| m.name == *name)
+                        .unwrap_or_else(|| panic!("no MOS model {name}"));
+                    let (nd, ng, ns, nb) = (nodes[0], nodes[1], nodes[2], nodes[3]);
+                    // In the device's polarity (`dev::MosP`): its controls and its currents
+                    // each times its type.
+                    let t = m.type_sign();
+                    let vgs = b.lin(ng).minus(&b.lin(ns)).scaled(t);
+                    let vds = b.lin(nd).minus(&b.lin(ns)).scaled(t);
+                    let vbs = b.lin(nb).minus(&b.lin(ns)).scaled(t);
+                    let vbd = b.lin(nb).minus(&b.lin(nd)).scaled(t);
+                    let typed =
+                        |v: Vec<(usize, f64)>| v.into_iter().map(|(i, s)| (i, t * s)).collect();
+                    let id = typed(Builder::inj(nd, ns));
+                    let bs = typed(Builder::inj(nb, ns));
+                    let bd = typed(Builder::inj(nb, nd));
+                    b.elem(
+                        p,
+                        "",
+                        Dev::Mos(dev::MosP::new(m)),
+                        vec![vgs, vds, vbs, vbd],
+                        vec![id, bs, bd],
                     );
                 }
                 Kind::OpAmp(name) => {
@@ -593,8 +637,8 @@ impl Net {
                         p,
                         "clamp",
                         Dev::Clamp(dev::Clamp {
-                            g: sim::OPAMP_CLAMP_G,
-                            knee: sim::OPAMP_CLAMP_KNEE,
+                            g: o.clamp_g,
+                            knee: o.clamp_knee,
                         }),
                         vec![hi, lo],
                         vec![Builder::inj(x, Node::Ground)],
@@ -709,7 +753,9 @@ impl Net {
         // SPICE's rshunt on every node.
         let n = b.names.len();
         for i in 0..n {
-            b.g.push((i, i, 1.0 / sim::RSHUNT));
+            if let Some(r) = opts.rshunt {
+                b.g.push((i, i, 1.0 / r));
+            }
         }
         let nu = b.inputs.len();
         let mut g = Mat::zeros(n, n);

@@ -67,6 +67,53 @@ fn an_rc_low_pass_steps_exactly() {
 }
 
 #[test]
+fn a_junction_to_a_negative_rail_starts_as_ngspice_starts_it() {
+    // A diode from a node to a -15 V rail, the node held up by a resistor to ground: from 0 V
+    // the junction starts 15 V forward. Started at the nodes, Newton comes down one thermal
+    // voltage an iteration; started as ngspice's MODEINITJCT starts it, in a few.
+    static DIODES: [&Diode; 1] = [&fixtures::D1S2473];
+    let d = &fixtures::D1S2473;
+    let r = 1e3;
+    let parts = [
+        part("R1", Kind::R(r), &["a", "0"]),
+        part("D1", Kind::D(d.name), &["a", "@vn"]),
+    ];
+    let circuit = Circuit {
+        library: Library {
+            diodes: &DIODES,
+            ..Default::default()
+        },
+        rails: vec![("vn".to_string(), -15.0)],
+    };
+    let net = Net::build(&parts, &opts(&[]), &circuit);
+    let u = [1.0];
+    let nodes = operating_point(&net, &u).expect("from the nodes");
+    let junctions = crate::dc::operating_point_with(&net, &u, crate::dc::Init::Junctions)
+        .expect("from the junctions");
+    assert!(
+        junctions.iters < 30,
+        "{} iterations from the junctions",
+        junctions.iters
+    );
+    assert!(
+        nodes.iters > junctions.iters,
+        "{} from the nodes",
+        nodes.iters
+    );
+    let a = |op: &crate::dc::Op| op.x[net.names.iter().position(|n| n == "t_a").expect("t_a")];
+    let vt = crate::dev::vt();
+    let i = -a(&junctions) / r;
+    let vd = (d.n * vt) * (i / d.is + 1.0).ln() + i * d.rs;
+    assert!(
+        (a(&junctions) - (-15.0 + vd)).abs() < 1e-9,
+        "the anode at {} V, the diode equation's {} V",
+        a(&junctions),
+        -15.0 + vd
+    );
+    assert!((a(&nodes) - a(&junctions)).abs() < 1e-9);
+}
+
+#[test]
 fn a_diode_clippers_operating_point_is_the_diode_equation() {
     static DIODES: [&Diode; 1] = [&fixtures::D1S2473];
     let d = &fixtures::D1S2473;

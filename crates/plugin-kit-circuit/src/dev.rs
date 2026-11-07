@@ -643,6 +643,23 @@ pub enum Dev {
 }
 
 impl Dev {
+    /// The controls ngspice starts a junction device's first Newton iteration at in its
+    /// `MODEINITJCT` (`dioload.c`, `bjtload.c`, `jfetload.c`, `mos1load.c`), whatever the nodes'
+    /// voltages: a diode's and a transistor's emitter junction at their critical voltage
+    /// (`vte ln(vte / (sqrt 2 is))`), the collector junction at 0, a JFET's gate junctions at -1 V,
+    /// and a MOS transistor at its threshold with vds 0 and its bulk junctions at -1 V (in its own
+    /// polarity). `None` for the behavioural models, which ngspice evaluates at the nodes.
+    pub fn init_junctions(&self) -> Option<Vec<f64>> {
+        let vcrit = |vte: f64, is: f64| vte * libm::log(vte / (std::f64::consts::SQRT_2 * is));
+        match self {
+            Dev::Diode(d) => Some(vec![vcrit(d.vte, d.is)]),
+            Dev::Bjt(b) => Some(vec![vcrit(b.vt, b.is), 0.0]),
+            Dev::Jfet(_) => Some(vec![-1.0, -1.0]),
+            Dev::Mos(m) => Some(vec![m.von, 0.0, -1.0, -1.0]),
+            _ => None,
+        }
+    }
+
     /// (controls, static outputs, charge outputs).
     pub fn shape(&self) -> (usize, usize, usize) {
         match self {

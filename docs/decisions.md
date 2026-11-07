@@ -1383,6 +1383,16 @@ behaviour as it was, so the TR-808's renders do not move:
 - **SPICE's `rshunt` as an option** (`Opts::rshunt`): the network has put 1e12 ohm from every node
   to ground, as the TR-808's netlists write it; the MS-20's write none. `Some(sim::RSHUNT)` is the
   default, so the TR-808's networks are unchanged; `None` leaves it out.
+- **ngspice's junction start, as an option** (`dc::operating_point_with` and `dc::Init`): each fresh
+  Newton start (plain Newton, source stepping's first step, gmin stepping's first) can evaluate its
+  junction devices first at ngspice's `MODEINITJCT` voltages (`Dev::init_junctions`: a diode and an
+  emitter junction at their critical voltage, a collector junction at 0, a JFET's gates at -1 V, a
+  MOS transistor at its threshold with its bulk junctions at -1 V) instead of at the starting nodes'
+  voltages. Found on the MS-20's first network: the KLM-307's LM13600s put a diode from a node to
+  the -15 V rail, which from 0 V starts 15 V forward, from where Newton comes down one thermal
+  voltage an iteration and no operating point was found; with the junction start it converges in
+  35 iterations and matches ngspice. `operating_point` keeps `Init::Nodes`, so the TR-808's
+  operating points are unchanged.
 
 **Reviewed** independently (another vendor's agent, given ngspice 47's source): the MOS equations,
 the JFET's PB and contacts and the op-amp's limit and clamp match ngspice and the MS-20's netlists;
@@ -1409,5 +1419,7 @@ the TR-808's renders, so it waits for a change of its own).
   transient (Gear order 2, 0.05 us steps): the stepper converges on it at second order (0.41,
   0.099, 0.023, 0.0058, 0.0014 V at 1, 2, 4, 8 and 16 times the rate), as a 15 V edge in under ten
   samples is its step's error, not the device's.
-- The op-amp's limit with a slew load; every Jacobian; nineteen tests, clippy and rustfmt clean,
+- The junction start: a diode to a -15 V rail found from the junctions in a few iterations, at the
+  diode equation's anode within 1 nV, and at the same point from the nodes.
+- The op-amp's limit with a slew load; every Jacobian; twenty tests, clippy and rustfmt clean,
   on Linux.

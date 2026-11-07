@@ -1343,9 +1343,9 @@ doc comment; the rest differ only at the boundary below.
 **Tested:** `cargo test -p plugin-kit-circuit --all-targets` (the engine's ten tests, the Jacobians
 against central differences among them, and three generic networks against their closed forms: an
 RC low-pass stepped exactly within 1e-9 V, a diode clipper's operating point within 1 uV of the
-diode equation, a transistor stage's base-referred gain within 0.3 % of the hybrid-pi model's with the card's
-series resistances),
-clippy and rustfmt clean, on Linux.
+diode equation, a transistor stage's base-referred gain within 0.3 % of the hybrid-pi model's with
+the card's series resistances), clippy and rustfmt clean, on Linux; CI's Linux, Windows and macOS
+runners pass (pull request #22).
 
 **Reviewed** independently (another vendor's agent, fresh context, given the source and the branch):
 the move is faithful (the four modules byte-identical, `dc`, `over` and the rest changed only as
@@ -1355,5 +1355,6 @@ resistance removed, are recorded or fixed (the test now takes the hybrid-pi gain
 base and emitter resistances and holds it within 0.3 %; with the base resistance removed from the
 engine it fails by 2 %).
 
-**Not tried:** Windows and macOS (CI's runners); the TR-808 on the kit's crate (its own branch,
-next); the MS-20's first use.
+**Not tried:** the TR-808 on the kit's crate (its own branch, next); the MS-20's first use.
+
+**Merged** on the owner's go, 2026-11-07: "yes, please merge".

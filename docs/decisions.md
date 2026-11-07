@@ -1292,3 +1292,50 @@ Linux.
 
 **Not tried:** Windows and macOS (CI's runners); the CA-72 on the kit's crate (its own branch).
 
+
+## K-CIRCUIT. The TR-808's circuit engine's foundation moves into the kit (`plugin-kit-circuit`)
+
+**The owner, 2026-11-07,** asked that no tooling the plug-ins already have be written again ("make
+sure you're not building the same tooling that might exist in our other emulator projects"). Three
+plug-ins each keep a private circuit solver (the CA-72's nodal Newton, the MC-79's with its device
+equations, the TR-808's pipeline from typed parts to a real-time model); asked where the shared one
+should live, a new kit crate, public as the kit is: "a)". The MS-20 is its first new user; the TR-808
+moves onto it on a branch of its own, which proves it bit-identical.
+
+**Decision:** the foundation of the TR-808's engine (its plug-in's `olifant` crate, 808-plugin
+`a1a0a9c`, with the performance rounds of its D131 to D136) is here as `plugin-kit-circuit`:
+`la` (dense and complex linear algebra), `dev` (the devices' equations as ngspice 47 evaluates them:
+Gummel-Poon, the diode with breakdown, the level-1 JFET, each with its charges; the op-amp's,
+Schmitt's, comparator's and OTA's behavioural subcircuits), `net` (the parts as node equations),
+`dc` (the operating point: SPICE's junction limiting, source and gmin stepping), `ss` (the state
+space and its exact modal steps), `red` (balanced truncation), `run` (the stepper: the modes
+advanced exactly, each device solved by Newton at the step's end), `over` (a decimator by two) and
+`cancel` (stopping a long build). Four are byte-identical to their source (`la`, `red`, `run`,
+`cancel`), `dc` differs by its trace's switch (`PLUGIN_KIT_CIRCUIT_DC_TRACE`) and a message, `over` by its
+doc comment; the rest differ only at the boundary below.
+
+- **The boundary.** The engine read the TR-808's parts, device cards and constants. Here they are
+  the kit's own: `part` (the units, `Taper`, `Kind`, `Part`, a part's section by its id string),
+  `devices` (the parameter types, the TR-808's from the MC-79's, and a `Library` of an
+  instrument's cards by name) and `sim` (the behavioural models' constants, a pot's sections, a
+  film capacitor's loss, SPICE's shunt). An instrument builds its network with `Net::build(parts,
+  opts, &Circuit { library, rails })`, converting its own parts (its section enum by its id) as it
+  writes them into its netlists. `Opts::cap_loss` defaults to no loss: the TR-808 passes its
+  fitted loss.
+- **What stays in the TR-808:** its voice engine (`live`, the ring `fast`, the light curves, which
+  name its parts), its voices and builds, its capacitor loss and noise data, its sequencer's
+  constants, its model fingerprint and the `phase-cost` scopes (they attribute time to its eleven
+  voices). Each instrument builds its own voice on the foundation.
+- **One behaviour added:** `ss` no longer calls a network singular when it has no algebraic part
+  (every unknown with a capacitor); every TR-808 network had one.
+- **The tests' cards:** nine of the TR-808's device cards are kept as test fixtures, in no
+  instrument's library.
+
+**Tested:** `cargo test -p plugin-kit-circuit --all-targets` (the engine's ten tests, the Jacobians
+against central differences among them, and three generic networks against their closed forms: an
+RC low-pass stepped exactly within 1e-9 V, a diode clipper's operating point within 1 uV of the
+diode equation, a transistor stage's gain within 2 % of -gm (Rc || ro) with its base divider),
+clippy and rustfmt clean, on Linux.
+
+**Not tried:** Windows and macOS (CI's runners); the TR-808 on the kit's crate (its own branch,
+next); the MS-20's first use.

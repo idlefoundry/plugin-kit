@@ -1,0 +1,19 @@
+[package]
+name = "plugin-kit-circuit"
+description = "A transcribed circuit in real time: the parts' node equations, the operating point, the state space with its exact modal steps and its reduction, and a stepper that solves the devices with ngspice's equations (the TR-808's engine's foundation, K-CIRCUIT)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+libm.workspace = true
+serde = { workspace = true, features = ["rc"] }
+
+[features]
+# Time spent in the engine's parts, for a cost study (compiles out without it).
+prof = []
+
+[lints]
+workspace = true

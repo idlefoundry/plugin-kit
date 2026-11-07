@@ -143,9 +143,11 @@ fn a_common_emitter_stage_obeys_kirchhoff_and_its_small_signal_gain() {
         (100.0..1000.0).contains(&beta),
         "the collector and base currents' ratio {beta}"
     );
-    // A small step at the input: the collector moves by -gm (Rc || ro) times the intrinsic base's
-    // move, gm = Ic / Vt, ro = (VAF + Vce) / Ic (the Early effect), and the intrinsic base sees
-    // the external one through RB's divider with r_pi = beta / gm.
+    // A small step at the input. The hybrid-pi model with the card's series resistances: a base
+    // current ib = dVb / (rb + r_pi + (beta + 1) RE) for a move dVb of the external base, a
+    // collector current beta ib into Rc || ro, so the base-referred gain is
+    // -beta (Rc || ro) / (rb + r_pi + (beta + 1) RE), with gm = Ic / Vt, r_pi = beta / gm and
+    // ro = (VAF + Vce) / Ic (the Early effect). The collector's own 1 ohm is left out (1e-4 of Rc).
     let h = 1.0 / 48_000.0;
     let mut s = Stepper::new(&sys, Modal::new(&sys), h);
     let dv = 1e-4;
@@ -159,9 +161,9 @@ fn a_common_emitter_stage_obeys_kirchhoff_and_its_small_signal_gain() {
     let gm = ic / crate::dev::vt();
     let ro = (q.vaf + vc) / ic;
     let r_pi = beta / gm;
-    let expected = -gm * (rc * ro / (rc + ro)) * r_pi / (r_pi + q.rb);
+    let expected = -beta * (rc * ro / (rc + ro)) / (q.rb + r_pi + (beta + 1.0) * q.re);
     assert!(
-        (gain / expected - 1.0).abs() < 0.02,
+        (gain / expected - 1.0).abs() < 0.003,
         "small-signal gain {gain}, its closed form {expected}"
     );
 }

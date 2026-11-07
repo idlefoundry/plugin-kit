@@ -1322,10 +1322,19 @@ doc comment; the rest differ only at the boundary below.
   opts, &Circuit { library, rails })`, converting its own parts (its section enum by its id) as it
   writes them into its netlists. `Opts::cap_loss` defaults to no loss: the TR-808 passes its
   fitted loss.
-- **What stays in the TR-808:** its voice engine (`live`, the ring `fast`, the light curves, which
-  name its parts), its voices and builds, its capacitor loss and noise data, its sequencer's
-  constants, its model fingerprint and the `phase-cost` scopes (they attribute time to its eleven
-  voices). Each instrument builds its own voice on the foundation.
+- **What stays in the TR-808, for now:** its voices and builds, its capacitor loss and noise data,
+  its sequencer's constants, its model fingerprint, the `phase-cost` scopes (they attribute time to
+  its eleven voices) and the light curves (`live/curves.rs`, whose groups and tables name its parts).
+  **Staged, not left for good:** the reduced stepper (`fast`) and most of the live engine (`live`)
+  are generic numerical machinery (the review, below); they move when an instrument needs them,
+  with the live engine's strike-and-ring life cycle separated from its numerics.
+- **What an instrument whose parts follow this format must add or convert** (the MS-20's, checked
+  by the review): a JFET's junction potential (fixed at 1 V in `dev`; the MS-20's cards use 2 V)
+  and its ohmic contacts; an op-amp's load-corrected slew; kinds for CMOS (MOS level 1, the MC-79's
+  equations), rheostats, key contacts, subcircuits and regulators; and a part's package instance,
+  without which two packages' internal transistors would share internal node names (`net::el`).
+  A pot's position here is the knob's, turned into the track's fraction by its taper; an
+  instrument whose position is already the electrical fraction passes taper B.
 - **One behaviour added:** `ss` no longer calls a network singular when it has no algebraic part
   (every unknown with a capacitor); every TR-808 network had one.
 - **The tests' cards:** nine of the TR-808's device cards are kept as test fixtures, in no
@@ -1334,8 +1343,17 @@ doc comment; the rest differ only at the boundary below.
 **Tested:** `cargo test -p plugin-kit-circuit --all-targets` (the engine's ten tests, the Jacobians
 against central differences among them, and three generic networks against their closed forms: an
 RC low-pass stepped exactly within 1e-9 V, a diode clipper's operating point within 1 uV of the
-diode equation, a transistor stage's gain within 2 % of -gm (Rc || ro) with its base divider),
+diode equation, a transistor stage's base-referred gain within 0.3 % of the hybrid-pi model's with the card's
+series resistances),
 clippy and rustfmt clean, on Linux.
+
+**Reviewed** independently (another vendor's agent, fresh context, given the source and the branch):
+the move is faithful (the four modules byte-identical, `dc`, `over` and the rest changed only as
+recorded, no default or constant changed silently, no private data); its findings, the boundary's
+gaps above, the staging of `fast` and `live`, and a transistor test that passed with the card's base
+resistance removed, are recorded or fixed (the test now takes the hybrid-pi gain with the card's
+base and emitter resistances and holds it within 0.3 %; with the base resistance removed from the
+engine it fails by 2 %).
 
 **Not tried:** Windows and macOS (CI's runners); the TR-808 on the kit's crate (its own branch,
 next); the MS-20's first use.

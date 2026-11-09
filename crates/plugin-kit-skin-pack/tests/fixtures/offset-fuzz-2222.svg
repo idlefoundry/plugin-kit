@@ -1,0 +1,13 @@
+<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'>
+        <defs><pattern id='p' width='10' height='10' patternUnits='userSpaceOnUse'
+        patternTransform='matrix(1 0 1 1 0 0)'><g opacity='.5'><rect width='10' height='10'/></g>
+        </pattern><mask id='a'><rect width='100' height='100' fill='url(#p)'/></mask>
+        <mask id='b' mask='url(#a)'><rect width='100' height='100'/></mask>
+        <clipPath id='c'><rect width='100' height='100'/></clipPath>
+        <clipPath id='d' clip-path='url(#c)'><rect width='100' height='100'/></clipPath>
+        <filter id='f' filterUnits='userSpaceOnUse' width='100' height='100'>
+        <feFlood result='f'/><feGaussianBlur stdDeviation='2'/><feOffset dx='184467440737095516161' dy='2'/>
+        <feColorMatrix type='saturate' values='.5'/><feComposite in2='f' operator='in'/>
+        <feMerge><feMergeNode in='SourceGraphic'/><feMergeNode/></feMerge></filter></defs>
+        <g opacity='.5' mask='url(#b)' clip-path='url(#d)' filter='url(#f)'>
+        <rect width='100' height='100' fill='url(#p)'/></g></svg>

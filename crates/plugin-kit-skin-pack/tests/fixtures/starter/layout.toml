@@ -1,0 +1,439 @@
+# The CC0 starter's layout: every control of the CA-72's panel, in three plain rows, the lamps and
+# POWER in the wooden strip. Not the official panel's arrangement: start from this one.
+# Dedicated to the public domain under CC0 1.0 (LICENSE.txt). The format: docs/skin-packs.md.
+
+format = 1
+# The revision of the CA-72's panel controls this layout was made for.
+controls = 3
+
+[fixtures]
+power = [3040, -65]
+lamp = [2950, -65]
+overload = [2860, -65]
+ultra = [2730, -65]
+plate = [40, -106]
+screws = [[400, -65, 7], [1550, -65, 7], [2500, -65, 7]]
+
+[[control]]
+param = "tune"
+at = [111, 120]
+
+[[control]]
+param = "glide"
+at = [333, 120]
+
+[[control]]
+param = "mod_mix"
+at = [555, 120]
+
+[[control]]
+param = "osc_mod"
+at = [777, 120]
+size = [108, 50]
+colour = "red"
+on = "right"
+
+[[control]]
+param = "osc1_range"
+at = [999, 120]
+
+[[control]]
+param = "osc2_range"
+at = [1221, 120]
+
+[[control]]
+param = "osc3_range"
+at = [1443, 120]
+
+[[control]]
+param = "osc2_frequency"
+at = [1665, 120]
+big = true
+
+[[control]]
+param = "osc3_frequency"
+at = [1887, 120]
+big = true
+
+[[control]]
+param = "osc1_waveform"
+at = [2109, 120]
+
+[[control]]
+param = "osc2_waveform"
+at = [2331, 120]
+
+[[control]]
+param = "osc3_waveform"
+at = [2553, 120]
+
+[[control]]
+param = "osc3_control"
+at = [2775, 120]
+size = [108, 50]
+colour = "red"
+on = "right"
+
+# Oscillators 2's and 3's TIMED keys (the controls' revision 2), each under its RANGE's legend;
+# the note value beside each is the plug-in's print.
+[[control]]
+param = "osc2_timed"
+at = [1221, 256]
+
+[[control]]
+param = "osc3_timed"
+at = [1443, 256]
+
+# Each oscillator's MOD key (the controls' revision 3), under its WAVEFORM's legend: on the
+# panel only while that oscillator's waveform is CONTINUOUS; MOD beside it is the plug-in's print.
+[[control]]
+param = "osc1_shape_mod"
+at = [2109, 256]
+
+[[control]]
+param = "osc2_shape_mod"
+at = [2331, 256]
+
+[[control]]
+param = "osc3_shape_mod"
+at = [2553, 256]
+
+[[control]]
+param = "quality"
+at = [2997, 120]
+
+[[control]]
+param = "osc1_volume"
+at = [111, 360]
+
+[[control]]
+param = "osc1_on"
+at = [333, 360]
+size = [108, 50]
+colour = "blue"
+on = "right"
+
+[[control]]
+param = "osc2_volume"
+at = [555, 360]
+
+[[control]]
+param = "osc2_on"
+at = [777, 360]
+size = [108, 50]
+colour = "blue"
+on = "right"
+
+[[control]]
+param = "osc3_volume"
+at = [999, 360]
+
+[[control]]
+param = "osc3_on"
+at = [1221, 360]
+size = [108, 50]
+colour = "blue"
+on = "right"
+
+[[control]]
+param = "ext_volume"
+at = [1443, 360]
+
+[[control]]
+param = "ext_on"
+at = [1665, 360]
+size = [108, 50]
+colour = "blue"
+on = "right"
+
+[[control]]
+param = "noise_volume"
+at = [1887, 360]
+
+[[control]]
+param = "noise_on"
+at = [2109, 360]
+size = [108, 50]
+colour = "blue"
+on = "right"
+
+[[control]]
+param = "noise_type"
+at = [2331, 360]
+size = [108, 50]
+colour = "blue"
+on = "right"
+
+[[control]]
+param = "filter_mode"
+at = [2553, 360]
+size = [108, 50]
+colour = "red"
+on = "right"
+
+[[control]]
+param = "filter_mod"
+at = [2775, 360]
+size = [108, 50]
+colour = "red"
+on = "right"
+
+[[control]]
+param = "keyboard_control_1"
+at = [2997, 360]
+size = [108, 50]
+colour = "red"
+on = "right"
+
+[[control]]
+param = "cutoff"
+at = [111, 600]
+
+[[control]]
+param = "emphasis"
+at = [333, 600]
+
+[[control]]
+param = "contour_amount"
+at = [555, 600]
+
+[[control]]
+param = "filter_attack"
+at = [777, 600]
+
+[[control]]
+param = "filter_decay"
+at = [999, 600]
+
+[[control]]
+param = "filter_sustain"
+at = [1221, 600]
+
+[[control]]
+param = "keyboard_control_2"
+at = [1443, 600]
+size = [108, 50]
+colour = "red"
+on = "right"
+
+[[control]]
+param = "loudness_attack"
+at = [1665, 600]
+
+[[control]]
+param = "loudness_decay"
+at = [1887, 600]
+
+[[control]]
+param = "loudness_sustain"
+at = [2109, 600]
+
+[[control]]
+param = "volume"
+at = [2331, 600]
+
+[[control]]
+param = "main_output"
+at = [2553, 600]
+size = [108, 50]
+colour = "blue"
+on = "right"
+
+[[control]]
+param = "a440"
+at = [2775, 600]
+size = [108, 50]
+colour = "blue"
+on = "right"
+
+[[control]]
+param = "feedback"
+at = [2997, 600]
+
+# A rule under each row.
+
+[[line]]
+from = [40, 248]
+to = [3068, 248]
+width = 2
+
+[[line]]
+from = [40, 488]
+to = [3068, 488]
+width = 2
+
+[[line]]
+from = [40, 728]
+to = [3068, 728]
+width = 2
+
+# Each control's name, under it.
+
+[[text]]
+text = "TUNE"
+at = [111, 220]
+
+[[text]]
+text = "GLIDE"
+at = [333, 220]
+
+[[text]]
+text = "MOD MIX"
+at = [555, 236]
+size = 16
+
+[[text]]
+text = "OSC MOD"
+at = [777, 220]
+
+[[text]]
+text = "RANGE 1"
+at = [999, 220]
+
+[[text]]
+text = "RANGE 2"
+at = [1221, 220]
+
+[[text]]
+text = "RANGE 3"
+at = [1443, 220]
+
+[[text]]
+text = "FREQ 2"
+at = [1665, 220]
+
+[[text]]
+text = "FREQ 3"
+at = [1887, 220]
+
+[[text]]
+text = "WAVE 1"
+at = [2109, 220]
+
+[[text]]
+text = "WAVE 2"
+at = [2331, 220]
+
+[[text]]
+text = "WAVE 3"
+at = [2553, 220]
+
+[[text]]
+text = "OSC 3 KEYS"
+at = [2775, 220]
+
+[[text]]
+text = "QUALITY"
+at = [2997, 220]
+
+[[text]]
+text = "OSC 1"
+at = [111, 460]
+
+[[text]]
+text = "OSC 1 ON"
+at = [333, 460]
+
+[[text]]
+text = "OSC 2"
+at = [555, 460]
+
+[[text]]
+text = "OSC 2 ON"
+at = [777, 460]
+
+[[text]]
+text = "OSC 3"
+at = [999, 460]
+
+[[text]]
+text = "OSC 3 ON"
+at = [1221, 460]
+
+[[text]]
+text = "EXT IN"
+at = [1443, 460]
+
+[[text]]
+text = "EXT ON"
+at = [1665, 460]
+
+[[text]]
+text = "NOISE"
+at = [1887, 460]
+
+[[text]]
+text = "NOISE ON"
+at = [2109, 460]
+
+[[text]]
+text = "WHITE PINK"
+at = [2331, 460]
+
+[[text]]
+text = "LO HI"
+at = [2553, 460]
+
+[[text]]
+text = "FILTER MOD"
+at = [2775, 460]
+
+[[text]]
+text = "KEYS 1"
+at = [2997, 460]
+
+[[text]]
+text = "CUTOFF"
+at = [111, 700]
+
+[[text]]
+text = "EMPHASIS"
+at = [333, 700]
+
+[[text]]
+text = "CONTOUR"
+at = [555, 700]
+
+[[text]]
+text = "F ATTACK"
+at = [777, 700]
+
+[[text]]
+text = "F DECAY"
+at = [999, 700]
+
+[[text]]
+text = "F SUSTAIN"
+at = [1221, 700]
+
+[[text]]
+text = "KEYS 2"
+at = [1443, 700]
+
+[[text]]
+text = "L ATTACK"
+at = [1665, 700]
+
+[[text]]
+text = "L DECAY"
+at = [1887, 700]
+
+[[text]]
+text = "L SUSTAIN"
+at = [2109, 700]
+
+[[text]]
+text = "VOLUME"
+at = [2331, 700]
+
+[[text]]
+text = "OUTPUT ON"
+at = [2553, 700]
+
+[[text]]
+text = "A-440"
+at = [2775, 700]
+
+[[text]]
+text = "FEEDBACK"
+at = [2997, 700]

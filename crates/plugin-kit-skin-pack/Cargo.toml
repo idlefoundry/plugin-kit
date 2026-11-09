@@ -1,0 +1,46 @@
+[package]
+name = "plugin-kit-skin-pack"
+description = "Idle Foundry's skin packs: reading a pack's folder as untrusted input, its manifest, licence and provenance, and its pictures, SVG and fonts checked against limits"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# These examples' guards are regression tests too, including in plain `cargo test`.
+[[example]]
+name = "pack_keygen"
+test = true
+
+[[example]]
+name = "pack_sign"
+test = true
+
+[dependencies]
+# The plug-ins' resvg (its usvg and tiny-skia), for SVG's parsing and a timed test drawing.
+resvg = { version = "0.45", default-features = false }
+# usvg's own XML parser, to read an SVG strictly (no DTD) before usvg sees it.
+roxmltree = "0.20"
+# usvg's own CSS tokenizer, to read a style's declarations as usvg reads them.
+simplecss = "0.2"
+# fontdb's and rustybuzz's font parser, to read a font's tables.
+ttf-parser = "0.25"
+png = "0.17"
+serde = { workspace = true }
+# Packs' signatures, checked offline against Idle Foundry's and future marketplace keys.
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize"] }
+sha2 = "0.10"
+toml = "0.7"
+# A pack in one file: a ZIP archive, stored or deflated (nothing else read).
+zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
+
+[dev-dependencies]
+getrandom = "0.4"
+zeroize = "1"
+tempfile = { workspace = true }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { workspace = true, features = ["Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_SystemServices"] }
+
+[lints]
+workspace = true

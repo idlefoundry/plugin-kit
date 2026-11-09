@@ -1,0 +1,39 @@
+# The CA-72 skin pack starter: copy this folder, change its id and name, and make it yours.
+# The format: docs/skin-packs.md. Dedicated to the public domain under CC0 1.0 (LICENSE.txt).
+
+format = 1
+id = "org.example.ca72-starter"
+name = "STARTER"
+version = "1.0.0"
+plugin = "ca-72"
+summary = "A plain starting point: every control in three rows on a slate face."
+license = "CC0-1.0"
+license_files = ["LICENSE.txt"]
+
+[[creators]]
+name = "Idle Foundry Ltd."
+role = "layout and drawing"
+
+[[assets]]
+path = "layout.toml"
+origin = "original"
+author = "Idle Foundry Ltd."
+
+[[assets]]
+path = "art/panel.svg"
+origin = "original"
+author = "Idle Foundry Ltd."
+
+# Before a marketplace lists your pack, declare (and keep) these. Declared, never cleared: a
+# review still decides.
+# [declarations]
+# rights_to_distribute = true
+# authorizes_customer_licensing = true
+# agreement = "<the seller agreement's version>"
+# declared_by = "<your name>"
+# declared_on = "YYYY-MM-DD"
+
+[look]
+base = "classic"
+layout = "layout.toml"
+art = "art/panel.svg"

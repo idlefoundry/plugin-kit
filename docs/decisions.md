@@ -1190,3 +1190,280 @@ rename-failure and renderer checks before moving its pin; its manual player-fiel
 exclusion already works, and it currently uses neither shared browser nor glow.
 No macOS, Windows, real-host, ignored-test or qualified performance result is
 claimed by this round.
+
+## K-SLOT-COUNT. A machine may set its own number of ngspice slots
+
+**Owner decision, 2026-11-04** (ARP 2600 D37): the idle Windows machine may run 12 ngspice
+slots for the ARP 2600's reference run (about 8 hours instead of about 24 at four). The shared
+machines keep the owner's rule of at most four.
+
+**Agent decisions, 2026-11-04** (not separately approved): the count is a file, `count`, in the
+machine's slot directory (`~/.cache/ngspice-slots/count`, or under `NGSPICE_SLOTS_DIR`), holding
+a whole number from 1 to `MAX_SLOTS` (32); without it, or with anything else in it, the default
+`SLOTS` (4) applies. A file rather than an environment variable, so the count belongs to the
+machine and one process cannot raise it on a shared one. Every lab on the machine reads the same
+file at each slot it takes; nothing a run computes changes, and a machine without the file
+behaves exactly as before.
+
+**Evidence:** `cargo test -p plugin-kit-spice` (with ngspice 47 on the Linux reference machine):
+5 passed, including the new `a_machines_count_file_sets_its_slots` (a missing, empty, zero,
+negative, fractional or too large count gives four; a count of 12 holds 12 and refuses a 13th)
+and the existing four-slot cap; clippy with warnings denied and fmt pass.
+
+## K-POOL. The voices' workers, held only while needed, from one budget for the machine (`plugin-kit-pool`)
+
+**Owner decision, 2026-11-04.** The MC-79 dropped out in Cubase 15 on Windows on a record-armed
+track at 480 samples: 4 to 8 times in 16 s at UNISON 2, never at UNISON 1 (the MC-79's R30). Each
+instance started four workers at activation, whatever UNISON was; they ran in MMCSS at 26 and spun
+between runs, above Cubase's engine threads at 25 on the same performance cores. Shown that, the
+owner approved moving the CA-72's thread model (its 0.2.6 and later) into the kit as its shared
+worker pool, the kit's planned step 4, with the MC-79 its first user ("3. Yes"). The CA-74 and the
+CA-72 move onto it later.
+
+**Owner decisions, 2026-11-04, later** (on the questions the first version of this record raised):
+the workers at time-critical priority on Windows, "Yes"; the MC-79's spare voices mended on the
+helper thread rather than nih-plug's, "Yes"; this record's pull request and the MC-79's branch
+merged after an independent review, "Yes". The paced figures on the Linux reference machine are
+taken by the session that arranges the timing lock's window with the other sessions.
+
+**Agent decisions, 2026-11-04** (not separately approved):
+
+- **One crate, generic over the voices.** A plug-in's voice implements `Play`; what a run tells
+  every voice is a `Run`, carried to the workers as words in atomics, so that a worker late for a
+  run reads whole words and can take no voice of a run that is over. The pool's core is the
+  MC-79's (R6, R13): a voice counted as played only once its worker has marked it and let it go,
+  and a struck voice's later deadline. The budget, the seats, the crew and the helper are the
+  CA-72's (its R21, R23, R-THREADS).
+- **Workers only while wanted** (the CA-72's R21). An instance's `Crew` holds a pool only while
+  the plug-in asks for workers. At a block's start the audio thread asks for one or lets it go
+  (`Crew::follow`); the instance's own `Helper` thread starts and stops pools (`Crew::serve`).
+  Nothing is started, joined, allocated or freed on the audio thread, and no seat file is
+  touched there.
+- **One budget for the machine** (the CA-72's R-THREADS, as approved there):
+  - B = max(floor, N − 2 − A) for the A instances holding workers;
+  - an instance at most C = max(floor, F − 2), N the hardware threads and F the fast ones, read
+    as the CA-72 reads them;
+  - never more than its voices less one, which the plug-in says in what it asks for;
+  - on macOS, as the CA-72's macOS rule, at least the instances and two more, never more than
+    N − 2;
+  - the floor is the CA-72's R39 count, one worker from 3 hardware threads up;
+  - shares are even, the remainder to the first seats;
+  - a pool whose seat's share has moved, or which got fewer than its share while some is free
+    again, is let go and asked for again.
+- **Seats bound every process of the user's**: lock files in the user's temporary folder (on
+  Linux `$XDG_RUNTIME_DIR`), as the CA-72's. The folder is shared by every plug-in on the kit
+  (`idlefoundry-seats-1`; the number is the files' format), so that two different plug-ins share
+  the machine too. `PLUGIN_KIT_SEATS_DIR` moves it, for tests and measurements.
+- **One pool for the whole process** stays rejected (the CA-72's R-THREADS): nothing measured here
+  argues for it.
+- **Short spins**: a worker spins 50 µs for the next run, not 200 (the CA-72's R-SPIN). It parks
+  at once when the plug-in says the block is over (`Pool::rest`, the CA-72's R-LO-WORKERS). The
+  audio thread wakes no more workers than the run's voices less its own.
+- **The CA-72's R-DROPOUTS.** In real time the audio thread waits for the workers spinning, its
+  clock read every 16 looks, never yielding or sleeping. A run offered past the voices' deadline
+  is still shared until the block's grace, the period's end, which the plug-in gives.
+- **On Windows the workers run at time-critical priority (15), outside MMCSS** (approved by the
+  owner, above), below a host's
+  own audio and engine threads, where `plugin-kit-rt` puts them in MMCSS's "Pro Audio" at 26.
+  Measured in Cubase (below): with four instances at UNISON 4, MMCSS gave 0, 1 and 2 dropouts in
+  three runs and time-critical none, with Cubase's Real Time meter at 52 % against 39 %. The risk
+  is that another process's thread above 15 preempts a worker. That worker's voice is then silent
+  for its run, rather than the host's whole block being late. `PLUGIN_KIT_WORKER_PRIORITY=mmcss`
+  (read once) puts them back in MMCSS, for measurements.
+- **Not ported**, each the CA-72's and none needed by the MC-79:
+  - its R-MAC-512 per-run work intervals: macOS keeps the MC-79's interval of half the period,
+    which the first worker now opens again at a block's next run after it has parked;
+  - its paired voices (R-HI-PAIRS) and its waking of the fewest threads on macOS;
+  - ULTRA's split crews;
+  - promoting a standalone's own audio thread (R-DROPOUTS, R-RTKIT).
+- **The helper does the crew's work and anything else a plug-in gives it**, on bits of its own
+  (`SERVE` is the crew's; the MC-79 mends its spare voices there). Between asks it looks at the
+  other processes' seats every 0.5 s.
+- **Work on the helper is told when the helper is being stopped** (`Stopping`, given to the work
+  with the asks), so that a long task stops at its next step: a host destroying the plug-in in the
+  middle of a mend of four voices then waits for one at most. The helper is joined when dropped,
+  so no work of it runs once the plug-in is gone; a plug-in drops it before its pool, and the
+  work holds its own references to what it uses.
+
+**Evidence (2026-11-04).**
+- **Tests:** `cargo test -p plugin-kit-pool` at `90bd207` (after the reviews, below) on the Linux
+  reference machine: 38 passed, 1 ignored (the seat holder, a child process of the tests), and
+  the integration test 1 passed. On the Windows machine with the release toolchain
+  (`1.97.1-x86_64-pc-windows-msvc`): 36 passed, 1 ignored, 1 passed (two Linux-only tests are not
+  built there). Clippy with warnings denied, with and without `--all-features`, on Linux and for
+  Windows (GNU and MSVC); rustfmt. Among the tests:
+  - the budget's arithmetic: B, C and the shares on the three machines R-THREADS measured, on a
+    quad-core, and the MC-79's UNISON (`the_count_follows_the_machine`,
+    `unisons_voices_bound_an_instance`, `shares_are_even`);
+  - seats across two processes: a child process holding two seats makes this instance's share a
+    third, and all of it again once the child is killed (`the_shares_follow_other_processes_instances`,
+    `a_killed_holder_s_seats_are_free_again`);
+  - workers given back when a plug-in is deactivated (`a_cleared_plan_gives_every_worker_back`)
+    and when it no longer wants them (`a_crew_holds_workers_only_while_wanted`);
+  - the shares following the instances (`the_shares_follow_the_instances`);
+  - the audio thread starting, joining, allocating and freeing nothing, and touching no seat file,
+    while two instances' workers come and go through six changes, a helper serving each, asked
+    by the audio thread (`tests/audio_thread.rs`);
+  - a helper dropped in the middle of a task of many steps stopping it at its next one, the drop
+    returning once it has, nothing of the work left (`a_helper_dropped_mid_task_stops_it_at_its_next_step`).
+- **Cubase Pro 15.0.30 on the Windows machine** (i5-13600K: 6 performance cores, 8 efficiency;
+  20 hardware threads). The MC-79's VST3 built with the release toolchain, on a record-armed track
+  (outside ASIO-Guard). Steinberg's built-in ASIO driver at 480 samples and 48 kHz, out through
+  "Digital Output (High Definition Audio Device)". Anvil, R30's 30 notes sent live over loopMIDI
+  while the transport ran, 16.5 s a run. A dropout is counted each time the Audio Performance
+  Monitor's overload light lit; the light was reset at once after each.
+  - "Before" is the build then installed: the MC-79's branch `keys` (0c0674b, SHA-256
+    `e3ad1246…`), whose pool is main's.
+  - Each cell gives the dropouts of each run, then Real Time's mean as a range over the runs.
+
+  | Build | Instances | UNISON 1 | UNISON 2 | UNISON 4 |
+  |---|---|---|---|---|
+  | before | 1 | 0, 0, 0 · 21–22 % | 16, 6, 2 · 25–38 % | 5, 0, 3 · 26–33 % |
+  | before | 4 | 0, 0, 0 · 26–28 % | 6, 8, 5 · 36–40 % | 17, 12, 17 · 58–59 % |
+  | the kit, workers in MMCSS | 1 | 0, 0, 0 · 25 % | 0, 0, 0 · 24 % | 0, 0, 0 · 29–30 % |
+  | the kit, workers in MMCSS | 4 | 0, 0, 0 · 27–28 % | 0, 0, 1 · 35–42 % | 0, 1, 2 · 52–53 % |
+  | the kit, time-critical (`79a7019`) | 1 | 0, 0, 0 · 24–26 % | 0, 0, 0 · 23–25 % | 0, 0, 0 · 26–31 % |
+  | the kit, time-critical (`79a7019`) | 4 | 0, 0, 0 · 26–27 % | 0, 0, 0 · 40–41 % | 0, 0, 0 · 39–41 % |
+
+  The runs of the final build are the last two rows (DLL SHA-256 `3556e361…`). Before them, the
+  same priority as a measurement's switch (`fac19d4`) gave, four instances at UNISON 4: 0, 0, 0
+  dropouts, Real Time 39 %; at UNISON 2, six runs: 1, 0, 0, 0, 0, 0 at 33–40 %. And four instances
+  at UNISON 2 with no worker at all: six runs with no dropout, Real Time 51–54 %.
+- **Paced:**
+  - **On the Linux reference machine** (the MC-79's `unison_bench`, as its R-POOL gives it: the engine as a host calls it, one host
+    thread at `SCHED_FIFO`, 48 kHz, 20 s a run), before (`263bf1a`, main's pool with four
+    workers) against after (this pool, `auto`) and after with no workers. At 128 and 256 frames
+    and UNISON 1, 2 and 4, two rounds, the second in the opposite order. Under the exclusive
+    timing lock, 21:21:54 to 21:34:55, after the other sessions held off for the window. Their
+    work without the lock went on, so the load average was 12 to 32 at the starts. The after
+    build predates the mend's move to the helper, which adds to the audio thread only a check at
+    the block's end that these runs never take. Worst block in ms (rounds 1 and 2), late blocks
+    (of 7,500 at 128 frames, 3,750 at 256), and the process's processor time in % of a core:
+
+    | Frames | UNISON | Before (4 workers) | After (`auto`) | After, no workers |
+    |---|---|---|---|---|
+    | 128 | 1 | 1.90, 1.95; 0 late; 25–27 % | 1.95, 1.96 (0 workers); 0 late; 26–28 % | |
+    | 128 | 2 | 2.00, 2.06; 0 late; 73–84 % | 2.15, 2.02 (1); 0 late; 52–59 % | 3.93, 3.88; 15, 44 late |
+    | 128 | 4 | 2.26, 2.07; 0 late; 128–130 % | 2.02, 2.01 (3); 0 late; 119–122 % | 7.66, 7.89; 7,386, 3,614 late |
+    | 256 | 1 | 3.14, 3.12; 0 late; 29–30 % | 3.17, 3.21 (0); 0 late; 28–30 % | |
+    | 256 | 2 | 3.18, 3.24; 0 late; 84 % | 3.25, 3.21 (1); 0 late; 58–61 % | 6.17, 6.87; 14, 21 late |
+    | 256 | 4 | 3.37, 3.36; 0 late; 134–140 % | 3.28, 3.31 (3); 0 late; 124 % | 12.48, 12.20; 3,597–3,701 late |
+
+    No voice run was cut in any run, and the watchdog never demoted the thread. So the worst block
+    is the same before and after, within 0.15 ms either way. After takes 20 to 26 points less of
+    a core at UNISON 2 and 5 to 16 less at UNISON 4. Without its worker, UNISON 2 is late in 14 to
+    44 blocks, so it keeps one (above).
+  - **On the Windows machine instead** (the same bench, the release toolchain, its host thread in
+    MMCSS's "Pro Audio" as a host's is; unpinned; two rounds in opposite order, 20 s each). The
+    machine was otherwise idle (15 to 40 % busy at the start). Its figures are not to be relied
+    on: UNISON 1, which has no worker in either build, varied from 0.6 to 3.0 ms mean at 256 frames
+    and from 1 to 851 late blocks of 3,750 between rounds. That looks like the scheduler placing
+    the bench's own thread on the hybrid processor's efficiency cores some of the time. Within
+    that noise before and after are alike in the host thread's worst block; the process's
+    processor time is lower after:
+    - at UNISON 2 and 128 frames, 50 to 55 % of a core after against 78 to 79 % before;
+    - at UNISON 4 and 256 frames, 142 to 180 % after against 144 to 165 %.
+  - **The workers' priority, paced** (the same bench, the after build, time-critical against MMCSS
+    interleaved, three rounds; voice runs cut at the deadline, late blocks):
+    - UNISON 2 at 128 frames: time-critical 15, 240 and 0 cut (8, 142, 0 late); MMCSS 1, 323 and
+      0 cut (2, 220, 1 late);
+    - UNISON 4 at 256 frames: time-critical 0, 0, 0 cut (no block late); MMCSS 84, 4 and 4 cut
+      (22, 0, 2 late).
+
+    So time-critical cuts no more voices than MMCSS in a bench with no host's engine threads
+    beside it.
+
+**An independent review, 2026-11-04** (of `dfada07`; no blocker), and what was done on each
+item, at `76a4042` (agent decisions, not separately approved, but for the owner's go to the
+review):
+1. **A seat kept when an ask was withdrawn while the helper started its pool** (UNISON back to 1
+   meanwhile): the late pool was stopped but the seat never given up. `Crew::deliver` now gives it
+   up when nothing is asked for, ready or let go
+   (`an_ask_withdrawn_while_its_pool_starts_gives_up_the_seat`).
+2. **Every share's move restarted every pool**, a pool of one worker included when its share went
+   from six to three, the audio thread then playing every voice alone for a block or more. A pool
+   now keeps the most it may have whatever its share (its ask, the voices less one, the cap) and
+   is started again only when that and the share give another number of workers
+   (`a_pool_is_kept_while_its_share_still_covers_it`).
+3. **A voice that panicked on a worker left an offline caller waiting for ever** (the worker
+   unwound without marking it). The worker now locks, plays and marks the voice inside a catch:
+   a voice that panics unwinds with its lock held, so the lock is poisoned as on any thread, and
+   the worker marks it failed and plays on. The voice is then failed for good: neither a worker
+   nor the caller's thread (which only tries its lock) plays it again, so the panic does not come
+   again, and the host's thread never meets it. The first fix (`90bd207` corrects it, after a
+   second review) caught the panic outside the lock, which left the voice unpoisoned: the
+   caller's thread could then play it and panic through the host's process call
+   (`a_voice_that_panics_on_a_worker_is_failed_for_good`: no wait, one panic only, the voice never
+   heard, the other voices playing on).
+4. **Windows: the last core's record was dropped**: the reading needed the type's 80 bytes left
+   where a core's record has 48. The records are now read as bytes, each by its own size, at least
+   a core's, never past the end; the offsets are checked against the system's types when built
+   for Windows (`every_cores_record_is_read`).
+5. **64 seat files were held open for the process's life** (macOS's soft limit is 256 files a
+   process). Only a held seat's file stays open now; the others are opened, tried and closed at
+   each look (`only_the_seats_held_are_kept_open`, Linux).
+6. **`Crew::follow` did not check the plan's generation**: a pool for an earlier plan with the same
+   count and share was kept (playing the old voices), and an ask made before a new plan was never
+   made again. A pool now carries its plan's generation and `Ask` the generation it is for; either
+   for another plan counts as none (`a_new_plan_is_followed_whatever_the_ask`). `Ask` changed:
+   `Waiting` and `Answered` carry the generation.
+7. **Windows, a host in the real-time priority class**: there time-critical is 31, above the
+   host's threads. In that class the workers take the lowest priority instead, 22, below the
+   host's threads at 24 and up, rather than MMCSS; elsewhere time-critical (15) as before
+   (`the_workers_sit_below_a_hosts_audio_threads`). An agent decision, the reviewer's
+   recommendation to the owner, whose answer is awaited.
+8. **Linux's priority** (`SCHED_FIFO` at 70, `plugin-kit-rt`'s) is left as it is: the owner's to
+   decide.
+9. **`tests/audio_thread.rs`'s check that the audio thread touches no seat file proved nothing**
+   (its budget had no seat folder). It now has a temporary one, and also requires that both
+   instances held their seats in it; it waits for the helper to give the seat up after the pool.
+10. **The user's id** is `geteuid()` (it was read from `/proc` on Linux and from the temporary
+    folder's owner on macOS, root where `TMPDIR` is unset); the seats' folder is checked with
+    `symlink_metadata`, so a link put in its place is refused. The run counter's wrap is left.
+
+Each of 1, 2, 3 and 5's tests fails without its fix and passes with it.
+
+**A second review, 2026-11-04** (of `9de82b3`: 1, 2, 4 to 7, 9 and 10 confirmed fixed, with no new
+race), and what was done, at `90bd207`:
+- item 3's fix corrected (above);
+- **a pool the system would not start kept its seat**: `Crew::start` took the seat, then the
+  start failed and nothing gave it up. It gives it up now (`a_pool_refused_gives_its_seat_back`,
+  which fails without it). The MC-79 starts its first pool through `Crew::start`, so this covers
+  it too.
+- the panicking voice's test first failed on CI's macOS runner: it assumed a worker would take
+  the voice within 20 ms, and there the caller took it first. At `8690ac2` the voice panics only
+  when a worker plays it, and the test runs until one has, then ten runs more (passed on 3 of
+  the Linux reference machine's processors, as CI's runners have).
+
+**Not tried:** macOS (CI's runners only); a hybrid processor on Linux; hosts other than Cubase
+with this build; the CA-74 and the CA-72 on the crate.
+
+## K-SKIN-PACK. Skin packs move from the CA-72 into the kit
+
+**The owner, 2026-11-06:** "we absolutely should move the skin pack crates into the plug-in kit",
+and every plug-in's skins are to be made this way from now on: anyone can make a look and
+import it, and the plug-in's own looks are packs too.
+
+**Decision:** the CA-72's `skin-pack` crate (its `main`, `4df5c8b`, the CA-72's R-SKIN-PACKS and
+R-SKIN-KEYS) is here as `plugin-kit-skin-pack`, its code unchanged but for its name. One reader,
+one set of checks and one signing key for every plug-in; a plug-in takes it as the other kit
+crates, and may keep its old name in its code with `skin-pack = { package =
+"plugin-kit-skin-pack", ... }`. A pack names its plug-in in its manifest (`plugin = "mc-79"`),
+so a pack for one is never loaded by another. What stays in each plug-in: its layout (the
+controls a pack places, in its `layout.toml`), its renderer, its built-in packs, the LOOK menu
+and its user guide and starter.
+
+- **The release gate** (the first-party key must be in the slot) is on for any of
+  `IDLEFOUNDRY_`, `CA72_`, `CA74_` or `MC79_` `PUBLIC_RELEASE=1` or `REQUIRE_NOTARIZATION=1`,
+  the variables the three plug-ins' packaging already sets; a new plug-in adds its prefix to
+  `build.rs`.
+- **The tests' files** that lived elsewhere in the CA-72 are here: its CC0 starter pack
+  (`tests/fixtures/starter`) and URW Gothic Book with its licence (`tests/fixtures/urw-gothic`,
+  for the font checks; a fixture, not in any binary).
+- The `R-` references in the crate's comments are the CA-72's `docs/decisions.md`.
+
+**Tested:** `cargo test -p plugin-kit-skin-pack --all-targets` (87 tests, all
+passing), clippy and rustfmt clean, and the gate built with `MC79_REQUIRE_NOTARIZATION=1`, on
+Linux.
+
+**Not tried:** Windows and macOS (CI's runners); the CA-72 on the kit's crate (its own branch).

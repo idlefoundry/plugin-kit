@@ -16,6 +16,7 @@ move onto it one at a time; until one has, it keeps its own copies.
 | `crates/plugin-kit-analysis` | Measurements of rendered audio for the labs and the tests: loudness (ITU-R BS.1770-4), sample and true peak, a spectrum summary, onsets, a pitch track, A/B comparison of renders |
 | `crates/plugin-kit-spice` | ngspice 47 as the offline circuit reference: runs netlists in batch mode, reads their rawfiles, fails on anything ngspice reports as an error; on Linux, macOS and Windows; at most four runs on a machine at once, at the lowest priority |
 | `crates/plugin-kit-rt` | Real-time threads: promotion to the audio threads' scheduling (macOS time constraint, Linux `SCHED_FIFO`, Windows MMCSS), CPU pinning, a watchdog that demotes a starving thread, a backoff for waits |
+| `crates/plugin-kit-pool` | The voices' worker threads: an instance's pool held only while it has voices to share, started and stopped by a helper thread of its own and never on the audio thread; one budget of workers for every process of the user's (seat files), shared evenly by the instances holding them; every voice played whole by one thread, so the samples are the same with any number of workers (K-POOL) |
 | `crates/plugin-kit-update` | The update check, made when the user asks: the latest release on GitHub through the system's curl (HTTPS only, 20 s, 1 MB, nothing sent but the request), read by the editor each frame with no thread waiting, and the installer for the system opened in the browser, from the repository's releases only |
 | `crates/plugin-kit-learn` | MIDI Learn's core: the 16 × 128 table of atomics the audio thread reads, a plug-in's list of learnable parameters, reserved controllers, absolute 7-bit values on an exact channel, jump takeover, one controller a control and one control a controller, the table saved by parameter id with the host's project, the glide of a learned knob |
 | `crates/plugin-kit-library` | The TOML preset library under the shared Idle Foundry root: built-in factory sounds with a user overlay, portable names, search, tags and favourites, complete file replacements and a plug-in supplied parameter codec; no window or framework types (`docs/editor-split.md`) |
@@ -24,6 +25,7 @@ move onto it one at a time; until one has, it keeps its own copies.
 | `crates/plugin-kit-editor-state` | One frame clock and shared asynchronous still parts; drags by discrete steps; Unicode text carets and typed values; caller-measured menus; a preset browser's search, filters, prompts, scrolling and caller actions; no drawing, library I/O, dependencies or framework types |
 | `crates/plugin-kit-materials` | The worn skins' materials: pictures placed and resampled at a scale, a display's glass, a lit button's light on the surface round it and its translucent cap lit from inside, dots filled as one shape, a dot-matrix display's lettering (K5) |
 | `crates/plugin-kit-stereo` | The stereo and DRIVE's AUTO GAIN: a constant-power pan law, where SCATTER places the voices (EVEN, CENTER) and DOUBLE its pairs, INNER's band on either side (K7), the places' glide and the trims of voices summed; AUTO GAIN's curve measured off the audio thread for each sound, K-weighted, read by the audio thread without a lock and saved with the session (K6) |
+| `crates/plugin-kit-skin-pack` | Skin packs, every plug-in's looks: a pack's folder or `.ifskin` read as untrusted input within limits, its manifest, licence, provenance and declarations, its PNG, strict-SVG and font files checked, its signature verified offline against Idle Foundry's built-in key, and the shared `Idle Foundry/Skins/` folder (K-SKIN-PACK; the format is the CA-72's `docs/skin-packs.md`) |
 | `crates/plugin-kit-standalone` | Standalone instruments' audio/MIDI settings, safe stream ownership, routing, capture-clock adaptation, recovery and atomic sessions; CPAL 0.15.3 and midir 0.9.1, with a processor/editor adapter supplied by the instrument (`docs/standalone.md`) |
 | `crates/plugin-kit-agent` | Agents operate a standalone instrument through MCP: a stdio bridge an agent's client starts, a local socket (owner-only, no TCP) the application opens only when the player allows it, discovery of running instances, and an inbox answered on the window thread; the instrument supplies its name and its tools (K-AGENT) |
 | `crates/plugin-kit-queue` | Packed atomic event/frame queues with one-attempt operations: no unsafe code, allocation, retry loop or dependency on an audio backend |
@@ -45,7 +47,7 @@ plugin-kit-spice = { git = "https://github.com/idlefoundry/plugin-kit", rev = "<
 nih_plug = { git = "https://github.com/idlefoundry/plugin-kit", rev = "<commit>" }
 ```
 
-and `baseview`, `plugin-kit-update` and `plugin-kit-learn` the same way in its plug-in crate,
+and `baseview`, `plugin-kit-pool`, `plugin-kit-update` and `plugin-kit-learn` the same way in its plug-in crate,
 every one at the same commit. softbuffer replaces crates.io's for the whole build:
 
 ```toml

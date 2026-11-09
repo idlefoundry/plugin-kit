@@ -1,6 +1,6 @@
 //! The runner against circuits with known answers, and its error catching.
 
-use plugin_kit_spice::{SLOTS, Slot, crossings, for_test};
+use plugin_kit_spice::{MAX_SLOTS, SLOTS, Slot, crossings, for_test, slots_in};
 
 #[test]
 fn rc_step_matches_its_exponential() {
@@ -86,6 +86,30 @@ fn the_slots_cap_the_runs_at_once() {
         "no slot free once all were let go: {}",
         why(dir.path())
     );
+}
+
+/// A machine's `count` file sets its slots (the idle Windows machine's 12); a missing, empty,
+/// zero, too large or unreadable count leaves the default.
+#[test]
+fn a_machines_count_file_sets_its_slots() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(slots_in(dir.path()), SLOTS, "no count file");
+    for bad in ["", "0", "abc", "-3", "4.5"] {
+        std::fs::write(dir.path().join("count"), bad).unwrap();
+        assert_eq!(slots_in(dir.path()), SLOTS, "count {bad:?}");
+    }
+    std::fs::write(dir.path().join("count"), format!("{}\n", MAX_SLOTS + 1)).unwrap();
+    assert_eq!(slots_in(dir.path()), SLOTS, "a count beyond the most");
+    std::fs::write(dir.path().join("count"), "12\n").unwrap();
+    assert_eq!(slots_in(dir.path()), 12);
+    let held: Vec<Slot> = (0..12)
+        .map(|_| Slot::try_acquire_in(dir.path()).expect("a free slot"))
+        .collect();
+    assert!(
+        Slot::try_acquire_in(dir.path()).is_none(),
+        "a slot beyond the count's 12"
+    );
+    drop(held);
 }
 
 /// Each slot file's answer to a lock, for a failure's message.

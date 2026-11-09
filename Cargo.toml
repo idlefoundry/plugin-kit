@@ -38,3 +38,11 @@ opt-level = 3
 
 [profile.dev.package.libm]
 opt-level = 3
+
+# Skin-pack guards draw SVG fixtures under a time limit. Match the plug-ins' optimised
+# graphics in debug too, so an unoptimised rasteriser does not reject valid artwork.
+[profile.dev.package.resvg]
+opt-level = 3
+
+[profile.dev.package.tiny-skia]
+opt-level = 3
